@@ -910,31 +910,40 @@ module.exports = {
       if (integName && typeof integrations[integName] === "function") {
         const isScriptMode = SCRIPT_MODE.has(integName);
 
-        if (isScriptMode) {
-          data._via_webhook = true; // informational only
-          sendContextToEasySystem(data)
-            .finally(() => {
-              integrations[integName](data, (err, updated) => {
-                if (err) console.error(`${integName} integration error:`, err);
-                return ack(updated || data); // ACK exactly once for script mode
-              });
-            });
-          return;
+        // ACK immediately for all webhooks to prevent timeout
+        try {
+          data.status = "success";
+          sdk.sendWebhookResponse(data, callback);
+        } catch (_) {
+          // best-effort ack
         }
 
-        // Direct-send: no ACK; integration will send message immediately
-        sendContextToEasySystem(data)
-          .finally(() => {
-            integrations[integName](data, (err, _updated) => {
-              if (err) console.error(`${integName} integration error:`, err);
-              return; // no webhook ACK here
+        // Process asynchronously after ACK
+        setImmediate(() => {
+          const asyncCb = (err) => {
+            if (err) console.error("Async post-ACK error:", err);
+          };
+
+          if (isScriptMode) {
+            data._via_webhook = true; // informational only
+            sendContextToEasySystem(data)
+              .finally(() => {
+                integrations[integName](data, asyncCb);
+              });
+            return;
+          }
+
+          // Direct-send: integration will send message immediately
+          sendContextToEasySystem(data)
+            .finally(() => {
+              integrations[integName](data, asyncCb);
             });
-          });
+        });
         return;
       }
 
-      // No ACK for unrecognized components - let them fail naturally
-      return;
+      // ACK for unrecognized components to prevent timeout
+      return sdk.sendWebhookResponse(data, callback);
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
