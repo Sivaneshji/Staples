@@ -349,7 +349,10 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
     data.agent_transfer = true;
     data.context.session.UserSession.owner = "kore";
     console.log(`[${tag}] First message is agent transfer — escalating.`);
-    // Don't call SDK functions in webhook context
+    console.log(`Transfer flags set - BotUserSession.transfer: ${data.context.session.BotUserSession.transfer}, agent_transfer: ${data.agent_transfer}`);
+    
+    // Set the message and transfer flags, then return
+    // The platform will handle the actual transfer based on these flags
     return callback(null, data);
   }
 
@@ -360,7 +363,8 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
 
   processEasySystemResponse(data, responseData);
   
-  // Don't call SDK functions in webhook context - just return the data
+  // For non-transfer responses, just return the data
+  // The platform will handle message sending based on the processed data
   return callback(null, data);
 }
 
@@ -385,9 +389,17 @@ function triggerAgentTransfer(data, callback, messageIfAny) {
     if (data.context?.session?.UserSession) {
       data.context.session.UserSession.owner = "kore";
     }
-    return sdk.sendBotMessage(data, callback);
+    
+    // Try to send message, but handle webhook context gracefully
+    try {
+      return sdk.sendBotMessage(data, callback);
+    } catch (sdkError) {
+      console.log("SDK not available in webhook context, setting transfer flags only");
+      return callback(null, data);
+    }
   } catch (e) {
-    return sdk.sendBotMessage(data, callback);
+    console.error("Error in triggerAgentTransfer:", e);
+    return callback(null, data);
   }
 }
 
