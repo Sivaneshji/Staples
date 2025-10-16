@@ -358,7 +358,10 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
   }
 
   processEasySystemResponse(data, responseData);
-  return sdk.sendUserMessage(data, callback);
+  
+  // For webhook context, we need to use sendBotMessage instead of sendUserMessage
+  // This ensures the message is sent back to the user properly
+  return sdk.sendBotMessage(data, callback);
 }
 
 function handleEasySendError_Direct(tag, data, error, callback) {
