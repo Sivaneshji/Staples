@@ -916,7 +916,7 @@ module.exports = {
             .finally(() => {
               integrations[integName](data, (err, updated) => {
                 if (err) console.error(`${integName} integration error:`, err);
-                return ack(updated || data); // ACK exactly once
+                return ack(updated || data); // ACK exactly once for script mode
               });
             });
           return;
@@ -933,8 +933,8 @@ module.exports = {
         return;
       }
 
-      // Default ACK when nothing to do
-      return sdk.sendWebhookResponse(data, callback);
+      // No ACK for unrecognized components - let them fail naturally
+      return;
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
