@@ -823,131 +823,141 @@ module.exports = {
 
       const integName = webhookMap[componentName];
 
-      // Helper to ACK once (only for SCRIPT_MODE)
-      const ack = (d = data) => {
-        d.status = "success";
+      // ACK webhook immediately to avoid RequestAgent/ESOCKETTIMEDOUT
+      try {
+        data.status = "success";
         if (typeof sdk.sendWebhookResponse === "function") {
-          return sdk.sendWebhookResponse(d, callback);
+          sdk.sendWebhookResponse(data, callback);
+        } else {
+          callback(null, data);
         }
-        return callback(null, d);
-      };
-
-      // Existing Quill handling for easySystemHook (preserved)
-      if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "Q"
-      ) {
-        console.log("Quill Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
-
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          correlationId,
-          (response, data, callback) => {
-            console.log(
-              "✅ Context updated for conversationId " 
-                + contextData.externalConversationId
-            );
-          }
-        )
-          .then(() => {
-            // Only runs AFTER safeEasySystemCall completes successfully
-            integrations.package_tracking_handover(data, callback);
-          })
-          .catch((err) => {
-            console.error(
-              "❌ Failed to update context before package tracking:",
-              err?.message || err
-            );
-            triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          });
-        return;
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "C"
-      ) {
-        console.log("DOTCOM Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
-
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " 
-                + contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-        return;
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "SA"
-      ) {
-        console.log("SBA Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
-
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " 
-               + contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-        return;
+      } catch (_) {
+        // best-effort ack; continue processing
       }
 
-      // SBA additional component handlers (additive)
-      if (integName && typeof integrations[integName] === "function") {
-        const isScriptMode = SCRIPT_MODE.has(integName);
+      // Continue processing asynchronously after ACK
+      setImmediate(() => {
+        const asyncCb = (err) => {
+          if (err) console.error("Async post-ACK error:", err);
+        };
+        // Existing Quill handling for easySystemHook (preserved)
+        if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "Q"
+        ) {
+          console.log("Quill Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
 
-        if (isScriptMode) {
-          data._via_webhook = true; // informational only
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            correlationId,
+            (response, data, callback) => {
+              console.log(
+                "✅ Context updated for conversationId " 
+                  + contextData.externalConversationId
+              );
+            }
+          )
+            .then(() => {
+              // Only runs AFTER safeEasySystemCall completes successfully
+              integrations.package_tracking_handover(data, asyncCb);
+            })
+            .catch((err) => {
+              console.error(
+                "❌ Failed to update context before package tracking:",
+                err?.message || err
+              );
+              triggerAgentTransfer(
+                data,
+                asyncCb,
+                "Please hold while I transfer you to an agent."
+              );
+            });
+          return;
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "C"
+        ) {
+          console.log("DOTCOM Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " 
+                  + contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+          return;
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "SA"
+        ) {
+          console.log("SBA Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " 
+                 + contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+          return;
+        }
+
+        // SBA additional component handlers (additive)
+        if (integName && typeof integrations[integName] === "function") {
+          const isScriptMode = SCRIPT_MODE.has(integName);
+
+          if (isScriptMode) {
+            data._via_webhook = true; // informational only
+          sendContextToEasySystem(data)
+              .finally(() => {
+              integrations[integName](data, (err, _updated) => {
+                  if (err) console.error(`${integName} integration error:`, err);
+                  // already ACKed
+                });
+              });
+            return;
+          }
+
+          // Direct-send: integration will send message immediately; webhook already ACKed
           sendContextToEasySystem(data)
             .finally(() => {
-              integrations[integName](data, (err, updated) => {
+              integrations[integName](data, (err, _updated) => {
                 if (err) console.error(`${integName} integration error:`, err);
-                return ack(updated || data); // ACK exactly once
+                return; 
               });
             });
           return;
         }
 
-        // Direct-send: no ACK; integration will send message immediately
-        sendContextToEasySystem(data)
-          .finally(() => {
-            integrations[integName](data, (err, _updated) => {
-              if (err) console.error(`${integName} integration error:`, err);
-              return; // no webhook ACK here
-            });
-          });
+        // nothing else to do post-ACK
         return;
-      }
-
-      // Default ACK when nothing to do
-      return sdk.sendWebhookResponse(data, callback);
+      });
+      return;
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
