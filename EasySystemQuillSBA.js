@@ -771,7 +771,6 @@ module.exports = {
     const correlationId = enhancedLogger.generateCorrelationId();
 
     try {
-      //console.log("on_webhook: " + JSON.stringify(data));
       console.log("component name: " + componentName);
 
       var contextData = {
@@ -808,138 +807,131 @@ module.exports = {
 
       const integName = webhookMap[componentName];
 
-      // Acknowledge webhook immediately to avoid platform timeouts
-      try {
-        data.status = "success";
-        sdk.sendWebhookResponse(data, callback);
-      } catch (_) {
-        // best-effort ack
+      // Helper to ACK once (only for SCRIPT_MODE)
+      const ack = (d = data) => {
+        d.status = "success";
+        if (typeof sdk.sendWebhookResponse === "function") {
+          return sdk.sendWebhookResponse(d, callback);
+        }
+        return callback(null, d);
+      };
+
+      // Original Quill handling for easySystemHook (preserved)
+      if (
+        componentName === "easySystemHook" &&
+        data.context.session.BotUserSession.businessUnit === "Q"
+      ) {
+        console.log("Quill Business Unit");
+        contextData.entityMap =
+          data.context.session.BotUserSession.entityPayload;
+
+        safeEasySystemCall(
+          "easysystem-context-api",
+          contextUrl,
+          contextData,
+          data,
+          callback,
+          correlationId,
+          (response, data, callback) => {
+            console.log(
+              "✅ Context updated for conversationId " +
+                contextData.externalConversationId
+            );
+          }
+        )
+          .then(() => {
+            // Only runs AFTER safeEasySystemCall completes successfully
+            integrations.package_tracking_handover(data, callback);
+          })
+          .catch((err) => {
+            console.error(
+              "❌ Failed to update context before package tracking:",
+              err?.message || err
+            );
+            triggerAgentTransfer(
+              data,
+              callback,
+              "Please hold while I transfer you to an agent."
+            );
+          });
+        return;
+      } else if (
+        componentName === "easySystemHook" &&
+        data.context.session.BotUserSession.businessUnit === "C"
+      ) {
+        console.log("DOTCOM Business Unit");
+        contextData.entityMap =
+          data.context.session.BotUserSession.entityPayload;
+
+        safeEasySystemCall(
+          "easysystem-context-api",
+          contextUrl,
+          contextData,
+          data,
+          callback,
+          (response, data, callback) => {
+            console.log(
+              "Context updated for conversationId " +
+                contextData.externalConversationId
+            );
+            integrations.package_tracking_handover(data, callback);
+          }
+        );
+        return;
+      } else if (
+        componentName === "easySystemHook" &&
+        data.context.session.BotUserSession.businessUnit === "SA"
+      ) {
+        console.log("SBA Business Unit");
+        contextData.entityMap =
+          data.context.session.BotUserSession.entityPayload;
+
+        safeEasySystemCall(
+          "easysystem-context-api",
+          contextUrl,
+          contextData,
+          data,
+          callback,
+          (response, data, callback) => {
+            console.log(
+              "Context updated for conversationId " +
+                contextData.externalConversationId
+            );
+            integrations.package_tracking_handover(data, callback);
+          }
+        );
+        return;
       }
 
-      // Continue work asynchronously after ACK
-      setImmediate(() => {
-        const asyncCb = (err) => {
-          if (err) console.error("Async post-ACK error:", err);
-        };
+      // SBA additional component handlers (additive)
+      if (integName && typeof integrations[integName] === "function") {
+        const isScriptMode = SCRIPT_MODE.has(integName);
 
-        // Original Quill handling for easySystemHook (preserved)
-        if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "Q"
-        ) {
-          console.log("Quill Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
-
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            correlationId,
-            (response, data, callback) => {
-              console.log(
-                "✅ Context updated for conversationId " +
-                  contextData.externalConversationId
-              );
-            }
-          )
-            .then(() => {
-              // Only runs AFTER safeEasySystemCall completes successfully
-              integrations.package_tracking_handover(data, asyncCb);
-            })
-            .catch((err) => {
-              console.error(
-                "❌ Failed to update context before package tracking:",
-                err?.message || err
-              );
-              triggerAgentTransfer(
-                data,
-                asyncCb,
-                "Please hold while I transfer you to an agent."
-              );
-            });
-          return;
-        } else if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "C"
-        ) {
-          console.log("DOTCOM Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
-
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            (response, data, callback) => {
-              console.log(
-                "Context updated for conversationId " +
-                  contextData.externalConversationId
-              );
-              integrations.package_tracking_handover(data, asyncCb);
-            }
-          );
-          return;
-        } else if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "SA"
-        ) {
-          console.log("SBA Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
-
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            (response, data, callback) => {
-              console.log(
-                "Context updated for conversationId " +
-                  contextData.externalConversationId
-              );
-              integrations.package_tracking_handover(data, asyncCb);
-            }
-          );
-          return;
-        }
-
-        // SBA additional component handlers (additive)
-        if (integName && typeof integrations[integName] === "function") {
-          const isScriptMode = SCRIPT_MODE.has(integName);
-
-          if (isScriptMode) {
-            data._via_webhook = true; // informational only
-            sendContextToEasySystem(data)
-              .finally(() => {
-                integrations[integName](data, (err, _updated) => {
-                  if (err) console.error(`${integName} integration error:`, err);
-                  // already ACKed
-                });
-              });
-            return;
-          }
-
-          // Direct-send: integration will send message immediately; webhook already ACKed
+        if (isScriptMode) {
+          data._via_webhook = true; // informational only
           sendContextToEasySystem(data)
             .finally(() => {
-              integrations[integName](data, (err, _updated) => {
+              integrations[integName](data, (err, updated) => {
                 if (err) console.error(`${integName} integration error:`, err);
-                return; // no webhook ACK here
+                return ack(updated || data); // ACK exactly once
               });
             });
           return;
         }
 
-        // nothing else to do post-ACK
+        // Direct-send: no ACK; integration will send message immediately
+        sendContextToEasySystem(data)
+          .finally(() => {
+            integrations[integName](data, (err, _updated) => {
+              if (err) console.error(`${integName} integration error:`, err);
+              return; // no webhook ACK here
+            });
+          });
         return;
-      });
-      return;
+      }
+
+      // Default ACK when nothing to do
+      return sdk.sendWebhookResponse(data, callback);
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
@@ -976,17 +968,17 @@ module.exports = {
 };
 
 const integrations = {
-  // Base Quill integration: keep unchanged
+  // Base Quill integration: keep unchanged for Q and C, SBA style for SA
   package_tracking_handover: function (data, callback) {
     const correlationId = enhancedLogger.generateCorrelationId();
 
     try {
       const orderNumber =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities
-          .orderNumber || data.context.session.BotUserSession.orderNumber;
+        data.context.AI_Assisted_Dialogs?.collectInfoTrack?.entities
+          ?.orderNumber || data.context.session.BotUserSession.orderNumber || data.context.orderNumber;
       const zipCode =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities.zipCode ||
-        data.context.session.BotUserSession.zipCode;
+        data.context.AI_Assisted_Dialogs?.collectInfoTrack?.entities?.zipCode ||
+        data.context.session.BotUserSession.zipCode || data.context.zipCode;
 
       const requestData = {
         text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
@@ -997,51 +989,97 @@ const integrations = {
         businessUnit: data.context.session.BotUserSession.businessUnit,
       };
 
-      // ⏳ Wait for safeEasySystemCall to finish before responding
-      safeEasySystemCall(
-        "easysystem-send-api",
-        easysytemUrl,
-        requestData,
-        data,
-        callback,
-        correlationId,
-        (response, data, callback) => {
-          try {
-            console.log("Easysystem response:", JSON.stringify(response.data));
-            processEasySystemResponse(data, response.data);
-            if (response.data.transfer || data.agent_transfer === true) {
+      // Check if this is SBA (SA) business unit for SBA-style rendering
+      if (data.context.session.BotUserSession.businessUnit === "SA") {
+        // SBA style: stash response for Script node
+        apiClient
+          .post(easysytemUrl, requestData, {
+            headers: { ...easyHeaders(data) },
+            timeout: 30000,
+            data,
+          })
+          .then((response) => {
+            const res = response.data || {};
+
+            // Stash EXACT result; Script node prints
+            data.context.session.BotUserSession.render = res.contentType || "text/plain";
+            data.context.session.BotUserSession.renderr = res.text || "";
+
+            // First-reply transfer / end flags (no message send here)
+            if (res.transfer) {
               data.context.session.BotUserSession.transfer = true;
-              return sdk.sendBotMessage(data, callback);
+              data.agent_transfer = true;
+              data.context.session.UserSession.owner = "kore";
             }
-            if (response.data.endConversation) {
+            if (res.endConversation) {
               data.context.session.BotUserSession.endConversationFromEasySystem = true;
+              data.context.session.UserSession.owner = "kore";
             }
-            // ✅ Once EasySystem response is processed, send user message
-            return sdk.sendUserMessage(data, callback);
-          } catch (innerError) {
-            console.error("Error processing EasySystem response:", innerError);
-            return triggerAgentTransfer(
+
+            // Ensure next node runs (Script)
+            data.context.session.UserSession.owner = "kore";
+
+            return callback(null, data);
+          })
+          .catch((error) => {
+            const status = error?.response?.status;
+            const resp = error?.response?.data;
+            console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
+
+            // Safe fallback so Script node still shows something
+            data.context.session.BotUserSession.render = "text/plain";
+            data.context.session.BotUserSession.renderr =
+              "Sorry, I couldn't fetch your tracking details right now.";
+            data.context.session.UserSession.owner = "kore";
+            return callback(null, data);
+          });
+      } else {
+        // Original Quill style for Q and C business units
+        safeEasySystemCall(
+          "easysystem-send-api",
+          easysytemUrl,
+          requestData,
+          data,
+          callback,
+          correlationId,
+          (response, data, callback) => {
+            try {
+              console.log("Easysystem response:", JSON.stringify(response.data));
+              processEasySystemResponse(data, response.data);
+              if (response.data.transfer || data.agent_transfer === true) {
+                data.context.session.BotUserSession.transfer = true;
+                return sdk.sendBotMessage(data, callback);
+              }
+              if (response.data.endConversation) {
+                data.context.session.BotUserSession.endConversationFromEasySystem = true;
+              }
+              // ✅ Once EasySystem response is processed, send user message
+              return sdk.sendUserMessage(data, callback);
+            } catch (innerError) {
+              console.error("Error processing EasySystem response:", innerError);
+              return triggerAgentTransfer(
+                data,
+                callback,
+                "Please hold while I transfer you to an agent."
+              );
+            }
+          }
+        )
+          .then(() => {
+            // This runs *after* safeEasySystemCall has completed successfully
+            console.log(
+              "✅ safeEasySystemCall completed for package_tracking_handover"
+            );
+          })
+          .catch((err) => {
+            console.error("❌ safeEasySystemCall failed:", err?.message || err);
+            triggerAgentTransfer(
               data,
               callback,
               "Please hold while I transfer you to an agent."
             );
-          }
-        }
-      )
-        .then(() => {
-          // This runs *after* safeEasySystemCall has completed successfully
-          console.log(
-            "✅ safeEasySystemCall completed for package_tracking_handover"
-          );
-        })
-        .catch((err) => {
-          console.error("❌ safeEasySystemCall failed:", err?.message || err);
-          triggerAgentTransfer(
-            data,
-            callback,
-            "Please hold while I transfer you to an agent."
-          );
-        });
+          });
+      }
     } catch (error) {
       enhancedLogger.error(
         "PACKAGE_TRACKING_ERROR",
@@ -1061,6 +1099,61 @@ const integrations = {
   },
 
   // === SBA: SCRIPT MODE integrations ===
+  // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
+  package_tracking_handover_sba: function (data, callback) {
+    const buHeader = buOf(data);
+    const orderNumber = data.context.orderNumber;
+    const zipCode = data.context.zipCode;
+
+    const requestData = {
+      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
+      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
+      conversationId: data.context.session.BotUserSession.conversationSessionId,
+      businessUnit: buHeader,
+    };
+
+    apiClient
+      .post(easysytemUrl, requestData, {
+        headers: { ...easyHeaders(data) },
+        timeout: 30000,
+        data,
+      })
+      .then((response) => {
+        const res = response.data || {};
+
+        // Stash EXACT result; Script node prints
+        data.context.session.BotUserSession.render = res.contentType || "text/plain";
+        data.context.session.BotUserSession.renderr = res.text || "";
+
+        // First-reply transfer / end flags (no message send here)
+        if (res.transfer) {
+          data.context.session.BotUserSession.transfer = true;
+          data.agent_transfer = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+        if (res.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+
+        // Ensure next node runs (Script)
+        data.context.session.UserSession.owner = "kore";
+
+        return callback(null, data);
+      })
+      .catch((error) => {
+        const status = error?.response?.status;
+        const resp = error?.response?.data;
+        console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
+
+        // Safe fallback so Script node still shows something
+        data.context.session.BotUserSession.render = "text/plain";
+        data.context.session.BotUserSession.renderr =
+          "Sorry, I couldn't fetch your tracking details right now.";
+        data.context.session.UserSession.owner = "kore";
+        return callback(null, data);
+      });
+  },
   Check_Return: function (data, callback) {
     const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
@@ -1082,9 +1175,11 @@ const integrations = {
       .then((response) => {
         const res = response.data || {};
 
+        // Stash EXACT result; Script node prints
         data.context.session.BotUserSession.render = res.contentType || "text/plain";
         data.context.session.BotUserSession.renderr = res.text || "";
 
+        // First-reply transfer / end flags (no message send here)
         if (res.transfer) {
           data.context.session.BotUserSession.transfer = true;
           data.agent_transfer = true;
