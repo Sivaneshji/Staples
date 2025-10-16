@@ -349,7 +349,8 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
     data.agent_transfer = true;
     data.context.session.UserSession.owner = "kore";
     console.log(`[${tag}] First message is agent transfer — escalating.`);
-    return sdk.sendBotMessage(data, callback);
+    // Don't call SDK functions in webhook context
+    return callback(null, data);
   }
 
   if (responseData?.endConversation) {
@@ -359,9 +360,8 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
 
   processEasySystemResponse(data, responseData);
   
-  // For webhook context, we need to use sendBotMessage instead of sendUserMessage
-  // This ensures the message is sent back to the user properly
-  return sdk.sendBotMessage(data, callback);
+  // Don't call SDK functions in webhook context - just return the data
+  return callback(null, data);
 }
 
 function handleEasySendError_Direct(tag, data, error, callback) {
@@ -910,40 +910,26 @@ module.exports = {
       if (integName && typeof integrations[integName] === "function") {
         const isScriptMode = SCRIPT_MODE.has(integName);
 
-        // ACK immediately for all webhooks to prevent timeout
-        try {
-          data.status = "success";
-          sdk.sendWebhookResponse(data, callback);
-        } catch (_) {
-          // best-effort ack
-        }
-
-        // Process asynchronously after ACK
-        setImmediate(() => {
-          const asyncCb = (err) => {
-            if (err) console.error("Async post-ACK error:", err);
-          };
-
-          if (isScriptMode) {
-            data._via_webhook = true; // informational only
-            sendContextToEasySystem(data)
-              .finally(() => {
-                integrations[integName](data, asyncCb);
-              });
-            return;
-          }
-
-          // Direct-send: integration will send message immediately
+        // Process immediately without ACK to avoid SDK issues
+        if (isScriptMode) {
+          data._via_webhook = true; // informational only
           sendContextToEasySystem(data)
             .finally(() => {
-              integrations[integName](data, asyncCb);
+              integrations[integName](data, callback);
             });
-        });
+          return;
+        }
+
+        // Direct-send: integration will send message immediately
+        sendContextToEasySystem(data)
+          .finally(() => {
+            integrations[integName](data, callback);
+          });
         return;
       }
 
-      // ACK for unrecognized components to prevent timeout
-      return sdk.sendWebhookResponse(data, callback);
+      // No action for unrecognized components
+      return callback(null, data);
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
