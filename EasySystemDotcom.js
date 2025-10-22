@@ -554,94 +554,57 @@ module.exports = {
     }
   },
 
-  // Webhooks from dialog nodes/routes - Updated with SBA structure
+  // Webhooks from dialog nodes/routes
   on_webhook: function (requestId, data, componentName, callback) {
     const correlationId = enhancedLogger.generateCorrelationId();
 
     try {
       console.log("component name: " + componentName);
 
+      var contextData = {
+        externalConversationId:
+          data.context.session.BotUserSession.conversationSessionId,
+        conversationId:
+          data.context.session.BotUserSession.conversationSessionId,
+        assistantType: "STANDARD",
+        channel: "Kore",
+      };
+
       // We only route ES context updates for DOTCOM (business unit "C")
       if (data.context.session.BotUserSession.businessUnit !== "C") {
         return sdk.sendWebhookResponse(data, callback);
       }
 
-      // Build context payload with login flag and entity mapping
-      const { headers, body: contextData } = buildEasySystemContextPayload(data);
-
-      // SBA-style webhook mapping
-      const webhookMap = {
+      // Friendly router: componentName -> integration method
+      const routeTable = {
         easySystemHook: "package_tracking_handover",
-        CancelItemHook: "Cancel_item",
-        CancelEntireHook: "Cancel_Entire_order",
-        RefundHook: "Refund_Check",
-        ReturnStatusHook: "Check_Return",
-        ExchangeHook: "Exchange_Item",
-        ShippingHook: "change_shipping_address",
-        ExistingHook: "manage_existing_users",
-        NewHook: "add_new_user_handler",
-        easyInvoiceHook: "invoice_or_packing_slip",
-        ModifyHook: "modify_shipping_location",
-        ResetHook: "reset_password_handler",
-        AccountHook: "account_id_handler",
-        MissingHook: "missing_item"
+        easySystemAddressChange: "change_shipping_address",
+        easySystemHookstore: "finding_near_estore",
+        resetPasswordWebHook: "reset_password",
+        CheckReturnWebHook: "Check_Return",
+        ExchangeWebHook: "Exchange_Item",
+        RefundWebHook: "Refund_Check",
+        CancelEntireOrderWebHook: "Cancel_Entire_order",
+        CancelItemWebHook: "Cancel_item",
       };
 
-      const integName = webhookMap[componentName];
+      const integrationMethod = routeTable[componentName];
 
-      // Helper to ACK once (only for SCRIPT_MODE)
-      const ack = (d = data) => {
-        d.status = "success";
-        if (typeof sdk.sendWebhookResponse === "function") {
-          return sdk.sendWebhookResponse(d, callback);
-        }
-        return callback(null, d);
-      };
-
-      if (!integName || !integrations[integName]) {
-        console.warn("[WEBHOOK] No integration mapped for:", componentName);
-        // ACK empty to keep dialog moving
-        return ack();
+      if (!integrationMethod || typeof integrations[integrationMethod] !== "function") {
+        // Not our route — hand control back to the platform
+        return sdk.sendWebhookResponse(data, callback);
       }
 
-      const isScriptMode = SCRIPT_MODE.has(integName);
+      // ES context updates want entityMap as well
+      contextData.entityMap = data.context.session.BotUserSession.entityPayload;
 
-      // SCRIPT MODE: stash + ACK once; Script node will render next
-      if (isScriptMode) {
-        data._via_webhook = true; // informational
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          correlationId,
-          () => {
-            console.log(
-              "Context updated for conversationId " + contextData.externalConversationId
-            );
-            return integrations[integName](data, callback);
-          }
+      // One-liner for "update ES context, *then* run integration"
+      return updateESContextThen(contextUrl, contextData, data, callback, () => {
+        console.log(
+          "Context updated for conversationId " + contextData.externalConversationId
         );
-        return;
-      }
-
-      // DIRECT-SEND MODE: send chat immediately, no ACK here
-      // Do NOT set _via_webhook; we WANT messaging to go out directly
-      safeEasySystemCall(
-        "easysystem-context-api",
-        contextUrl,
-        contextData,
-        data,
-        callback,
-        correlationId,
-        () => {
-          console.log(
-            "Context updated for conversationId " + contextData.externalConversationId
-          );
-          return integrations[integName](data, callback);
-        }
-      );
+        return integrations[integrationMethod](data, callback);
+      }, correlationId);
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
@@ -710,90 +673,28 @@ module.exports = {
   },
 };
 
-// ---- Context building helpers (from SBA code) ---------------------------------------------
-
-function buOf(data) {
-  return data?.context?.session?.BotUserSession?.businessUnit || "C";
-}
-
-function pickFirst(...vals) {
-  for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
-  return undefined;
-}
-
-// Build /context-load payload from entities + session + customData
-function buildEasySystemContextPayload(data) {
-  const s  = data.context?.session || {};
-  const bu = s.BotUserSession?.businessUnit || "C";
-  const convId = s.BotUserSession?.conversationSessionId;
-
-  const e = data.context?.entities || {};
-  const profile = s.BotUserSession?.userProfile || {};
-  const user = s.UserSession || {};
-  const cd = s.BotUserSession?.customData || {};
-
-  const cartFirstZip = cd.cart?.lines?.[0]?.zipcode;
-
-  const ACCOUNT_NUMBER = pickFirst(
-    e.ACCOUNT_NUMBER, profile.ACCOUNT_NUMBER, user.ACCOUNT_NUMBER,
-    cd.accountNumber, cd.master
-  );
-  const DIVISION = pickFirst(
-    e.DIVISION, profile.DIVISION, user.DIVISION,
-    cd.div
-  );
-  const USER_ID = pickFirst(
-    e.USER_ID, profile.USER_ID, user.USER_ID, profile.userId,
-    cd.newUserID, cd.userid
-  );
-  const CUSTOMER_NUMBER = pickFirst(
-    e.CUSTOMER_NUMBER, profile.CUSTOMER_NUMBER, user.CUSTOMER_NUMBER,
-    cd.accountNumber, cd.master
-  );
-  const ORDER_NUMBER = pickFirst(
-    e.ORDER_NUMBER, e.orderNumberCollect, e.orderNumberEntity, e.orderEntity
-  );
-  const EMAIL = pickFirst(
-    e.EMAIL, profile.EMAIL, user.emailId, user.email,
-    cd.email
-  );
-  const ZIPCODE = pickFirst(
-    e.ZIPCODE, e.zipCodeCollect, e.zipCodeEntity, e.zipEntity, e.ZipCodeReturn, e.getZipCode, e.modifyZipCode,
-    cd.zipcode, cd.shiptozipcode, cartFirstZip
-  );
-
-  const isLoggedIn = String(Boolean(
-    pickFirst(
-      s.BotUserSession?.isLoggedIn, user.isLoggedIn, profile.isLoggedIn,
-      cd.loggedIn, EMAIL || CUSTOMER_NUMBER
-    )
-  ));
-
-  return {
-    headers: { "Content-Type": "application/json", "business-unit": bu },
-    body: {
-      externalConversationId: convId,
-      conversationId: convId,
-      assistantType: "STANDARD",
-      entityMap: {
-        ...(CUSTOMER_NUMBER ? { CUSTOMER_NUMBER: String(CUSTOMER_NUMBER)} : {}),
-        ...(ORDER_NUMBER    ? { ORDER_NUMBER:    String(ORDER_NUMBER)   } : {}),
-        ...(EMAIL           ? { EMAIL:           String(EMAIL)          } : {}),
-        ...(ACCOUNT_NUMBER  ? { ACCOUNT_NUMBER:  String(ACCOUNT_NUMBER) } : {}),
-        ...(DIVISION        ? { DIVISION:        String(DIVISION)       } : {}),
-        ...(USER_ID         ? { USER_ID:         String(USER_ID)        } : {}),
-        ...(ZIPCODE         ? { ZIPCODE:         String(ZIPCODE)        } : {}),
-      },
-      loggedIn: isLoggedIn,
-      channel: "Kore"
-    }
-  };
-}
+// ---- Login flag helper (from SBA code) ---------------------------------------------
 
 function getIsLoggedIn(data) {
   try {
-    const { body } = buildEasySystemContextPayload(data);
-    return body.loggedIn; // "true" or "false"
+    const s = data.context?.session || {};
+    const user = s.UserSession || {};
+    const profile = s.BotUserSession?.userProfile || {};
+    const cd = s.BotUserSession?.customData || {};
+    
+    const EMAIL = user.emailId || user.email || profile.EMAIL || cd.email;
+    const CUSTOMER_NUMBER = user.CUSTOMER_NUMBER || profile.CUSTOMER_NUMBER || cd.accountNumber || cd.master;
+    
+    const isLoggedIn = Boolean(
+      s.BotUserSession?.isLoggedIn || 
+      user.isLoggedIn || 
+      profile.isLoggedIn || 
+      cd.loggedIn || 
+      EMAIL || 
+      CUSTOMER_NUMBER
+    );
+    
+    return String(isLoggedIn); // "true" or "false"
   } catch {
     return "false";
   }
@@ -813,11 +714,26 @@ function updateESContextThen(contextUrl, contextData, data, callback, onSuccess,
   );
 }
 
-// ---- SCRIPT_MODE definitions (from SBA) ----
-const SCRIPT_MODE = new Set([
-  "package_tracking_handover",
-  "Check_Return",
-]);
+function runESFlow(data, callback, { text, onSuccess }) {
+  const correlationId = enhancedLogger.generateCorrelationId();
+  const requestData = makeRequestData(data, text);
+
+  return safeEasySystemCall(
+    "easysystem-send-api",
+    easysytemUrl,
+    requestData,
+    data,
+    callback,
+    correlationId,
+    (response, data, callback) => onSuccess(response, data, callback)
+  ).catch((err) => {
+    console.error("❌ safeEasySystemCall failed:", err?.message || err);
+    return triggerAgentTransfer(
+      data,
+      callback, "Please hold while I transfer you to an agent."
+    );
+  });
+}
 
 // ---- Integrations (SBA-style with Dotcom functionality) -------------------------------------------
 
@@ -892,472 +808,154 @@ function processEasySystemResponse(data, responseData) {
 }
 
 const integrations = {
-  // === SCRIPT MODE (stash ES response as-is; Script node will print) ===
+  // Track order: stash ES response in trackOrder/content and hand turn to ES
+  package_tracking_handover(data, callback) {
+    const { orderNumber, zipCode } = data.context;
+    const text = `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`;
 
-  package_tracking_handover: function (data, callback) {
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const orderNumber = data.context.orderNumber;
-    const zipCode = data.context.zipCode;
-
-    const requestData = {
-      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: data.context.session.BotUserSession.businessUnit,
-    };
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
-        
-        // Stash EXACT result; Script node prints
-        data.context.session.BotUserSession.render = response.data.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = response.data.text || "";
-
-        // First-reply transfer / end flags (no message send here)
-        if (response.data.transfer) {
-          data.context.session.BotUserSession.transfer = true;
-          data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (response.data.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data); // on_webhook ACKs
-      }
-    )
-    .catch((error) => {
-      console.error("package_tracking_handover error:", error?.message || error);
-
-      // Safe fallback so Script node still shows something
-      data.context.session.BotUserSession.render = "text/plain";
-      data.context.session.BotUserSession.renderr = "Sorry, I couldn't fetch your tracking details right now.";
-      data.context.session.UserSession.owner = "kore";
-      return callback(null, data);
+        data.context.session.BotUserSession.trackOrder = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
+        data.context.session.UserSession.owner = "easysystem";
+        handleAgentTransfer({ response, data, callback, sdk });
+        return sdk.sendUserMessage(data, callback);
+      },
     });
   },
 
-  Check_Return: function (data, callback) {
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const orderNumber = data.context.orderNumber;
-    const zipCode = data.context.zipCode;
+  // Find nearest stores and store the blob on the session
+  finding_near_estore(data, callback) {
+    const { zipCode } = data.context;
+    const text =
+      `Directly give all the information about three nearest store based on this zip code:${zipCode}` +
+      `Give it all information at first go and DO not ask for permission.`;
 
-    const requestData = {
-      text: `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: data.context.session.BotUserSession.businessUnit,
-    };
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
-        
-        // Stash EXACT result; Script node prints
-        data.context.session.BotUserSession.render = response.data.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = response.data.text || "";
-
-        // First-reply transfer / end flags (no message send here)
-        if (response.data.transfer) {
-          data.context.session.BotUserSession.transfer = true;
-          data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (response.data.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data); // on_webhook ACKs
-      }
-    )
-    .catch((error) => {
-      console.error("Return Status Error:", error?.message || error);
-
-      // Safe fallback
-      data.context.session.BotUserSession.render = "text/plain";
-      data.context.session.BotUserSession.renderr = "Sorry, I couldn't fetch your return status.";
-      data.context.session.UserSession.owner = "kore";
-      return callback(null, data);
+        data.context.session.BotUserSession.storeInfo = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
+        handleAgentTransfer({ response, data, callback, sdk });
+        return sdk.sendUserMessage(data, callback);
+      },
     });
   },
 
-  // === DIRECT-SEND MODE (send ES reply immediately, honor first-reply transfer) ===
+  // Change shipping address
+  change_shipping_address(data, callback) {
+    const orderNumber = data.context.orderNumberForChangeAddress;
+    const zipCode = data.context.zipcodeForChangeAddress;
+    const text = `Change my shipping address having order number ${orderNumber} and zip code is ${zipCode}`;
 
-  Cancel_item: function (data, callback) {
-    const orderNumber = data.context.orderNumberForCancelItem;
-    const zipCode = data.context.zipcodeForCancelItem;
-    const text = `Cancel Item having Order Number ${orderNumber} and ZipCode ${zipCode}`;
-    
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.message = response.data.text;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
-
-  add_new_user_handler: function (data, callback) {
-    const text = "I want to add a new user to my Staples account.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  Cancel_Entire_order: function (data, callback) {
-    const orderNumber = data.context.orderNumberForCancelOrder;
-    const zipCode = data.context.zipcodeForCancelOrder;
-    const text = `Cancel the Entire Order having Order Number ${orderNumber} and ZipCode ${zipCode}`;
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  Refund_Check: function (data, callback) {
-    const text = "I want to check my refund status.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  Exchange_Item: function (data, callback) {
-    const text = "I want to return or exchange an item.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  change_shipping_address: function (data, callback) {
-    const text = "I want to add a new shipping location to my Staples account (enter address, set delivery preferences, and update contact details).";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  manage_existing_users: function (data, callback) {
-    const text = "I want to manage an existing user on my Staples account (edit details, change roles/permissions, or deactivate).";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  reset_password: function (data, callback) {
+  // Reset password
+  reset_password(data, callback) {
     const text = "Reset the password";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
 
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.context.session.BotUserSession.resetMessage = response.data.text;
         data.context.session.BotUserSession.content = response.data.contentType;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
 
-  reset_password_handler: function (data, callback) {
-    const text = "Reset the password";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
+  // Check return status
+  Check_Return(data, callback) {
+    const { orderNumber, zipCode } = data.context;
+    const text = `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`;
 
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
+        console.log("Easysystem response:", JSON.stringify(response.data));
+        data.context.session.BotUserSession.returnStatus = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
+        // data.message = response.data.text;
+        handleAgentTransfer({ response, data, callback, sdk });
+        return sdk.sendUserMessage(data, callback);
+      },
+    });
+  },
+
+  // Exchange item
+  Exchange_Item(data, callback) {
+    const text = "Return or Exchange the Item";
+
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.message = response.data.text;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
 
-  invoice_or_packing_slip: function (data, callback) {
-    const text = "I need help with an invoice or packing slip.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
+  // Refund status
+  Refund_Check(data, callback) {
+    const text = "Refund Status Inquiry";
 
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.message = response.data.text;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
 
-  modify_shipping_location: function (data, callback) {
-    const text = "I want to modify an existing shipping location on my Staples account";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
+  // Cancel entire order
+  Cancel_Entire_order(data, callback) {
+    const orderNumber = data.context.orderNumberForCancelOrder;
+    const zipCode = data.context.zipcodeForCancelOrder;
+    const text = `Cancel the Entire Order having Order Number ${orderNumber} and ZipCode ${zipCode}`;
 
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.message = response.data.text;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
 
-  account_id_handler: function (data, callback) {
-    const text = "I need help with my account or user ID.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
+  // Cancel specific item
+  Cancel_item(data, callback) {
+    const orderNumber = data.context.orderNumberForCancelItem;
+    const zipCode = data.context.zipcodeForCancelItem;
+    const text = `Cancel Item having Order Number ${orderNumber} and ZipCode ${zipCode}`;
 
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
+    return runESFlow(data, callback, {
+      text,
+      onSuccess: (response, data, callback) => {
         console.log("Easysystem response:", JSON.stringify(response.data));
         data.message = response.data.text;
         handleAgentTransfer({ response, data, callback, sdk });
         return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
-    });
-  },
-
-  missing_item: function (data, callback) {
-    const text = "I need help with a missing item from my order.";
-    const correlationId = enhancedLogger.generateCorrelationId();
-    const requestData = makeRequestData(data, text);
-
-    safeEasySystemCall(
-      "easysystem-send-api",
-      easysytemUrl,
-      requestData,
-      data,
-      callback,
-      correlationId,
-      (response, data, callback) => {
-        console.log("Easysystem response:", JSON.stringify(response.data));
-        data.message = response.data.text;
-        handleAgentTransfer({ response, data, callback, sdk });
-        return sdk.sendUserMessage(data, callback);
-      }
-    ).catch((err) => {
-      console.error("❌ safeEasySystemCall failed:", err?.message || err);
-      return triggerAgentTransfer(
-        data,
-        callback, "Please hold while I transfer you to an agent."
-      );
+      },
     });
   },
 };
