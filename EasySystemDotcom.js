@@ -962,8 +962,9 @@ const integrations = {
       .then((response) => {
         const res = response.data || {};
 
-        data.context.session.BotUserSession.content = res.contentType;
-        data.context.session.BotUserSession.trackOrder = res.text;
+        // Set the correct session variables for the script node
+        data.context.session.BotUserSession.trackOrder = res.text || "";
+        data.context.session.BotUserSession.content = res.contentType || "text/plain";
 
         if (res.transfer) {
           data.context.session.BotUserSession.transfer = true;
@@ -985,12 +986,9 @@ const integrations = {
         const resp = error?.response?.data;
         console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
 
-        // data.context.session.BotUserSession.render = "text/plain";
-        // data.context.session.BotUserSession.renderr =
-        //   "Sorry, I couldn't fetch your tracking details right now.";
-        // data.context.session.UserSession.owner = "kore";
-        data.context.session.BotUserSession.trackOrder  = "text/plain";
-        data.context.session.BotUserSession.content = "Sorry, I couldn't fetch your tracking details right now.";
+        // Set fallback values for the script node
+        data.context.session.BotUserSession.trackOrder = "Sorry, I couldn't fetch your tracking details right now.";
+        data.context.session.BotUserSession.content = "text/plain";
         data.context.session.UserSession.owner = "kore";
         return callback(null, data);
       });
@@ -1017,8 +1015,9 @@ const integrations = {
       .then((response) => {
         const res = response.data || {};
 
-        data.context.session.BotUserSession.render = res.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = res.text || "";
+        // Set the correct session variables for the script node
+        data.context.session.BotUserSession.returnStatus = res.text || "";
+        data.context.session.BotUserSession.content = res.contentType || "text/plain";
 
         if (res.transfer) {
           data.context.session.BotUserSession.transfer = true;
@@ -1040,10 +1039,9 @@ const integrations = {
         const resp = error?.response?.data;
         console.error("Return Status Error:", status, resp || error.message);
 
-        // Safe fallback so Script node still shows something
-        data.context.session.BotUserSession.render = "text/plain";
-        data.context.session.BotUserSession.renderr =
-          "Sorry, I couldn't fetch your return status.";
+        // Set fallback values for the script node
+        data.context.session.BotUserSession.returnStatus = "Sorry, I couldn't fetch your return status.";
+        data.context.session.BotUserSession.content = "text/plain";
         data.context.session.UserSession.owner = "kore";
         return callback(null, data);
       });
