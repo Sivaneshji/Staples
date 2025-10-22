@@ -799,10 +799,21 @@ module.exports = {
         channel: "Kore",
       };
 
-      // SBA webhook map (only package tracking and return status)
+      // SBA webhook map (additional integrations)
       const webhookMap = {
-        easySystemHook: "package_tracking_handover",
+        CancelItemHook: "Cancel_item",
+        CancelEntireHook: "Cancel_Entire_order",
+        RefundHook: "Refund_Check",
         ReturnStatusHook: "Check_Return",
+        ExchangeHook: "Exchange_Item",
+        ShippingHook: "change_shipping_address",
+        ExistingHook: "manage_existing_users",
+        NewHook: "add_new_user_handler",
+        easyInvoiceHook: "invoice_or_packing_slip",
+        ModifyHook: "modify_shipping_location",
+        ResetHook: "reset_password_handler",
+        AccountHook: "account_id_handler",
+        MissingHook: "missing_item",
       };
 
       const SCRIPT_MODE = new Set([
@@ -916,15 +927,15 @@ module.exports = {
           return;
         }
 
-        // SBA component handlers (only package tracking and return status)
+        // SBA additional component handlers (additive)
         if (integName && typeof integrations[integName] === "function") {
           const isScriptMode = SCRIPT_MODE.has(integName);
 
           if (isScriptMode) {
             data._via_webhook = true; // informational only
-            sendContextToEasySystem(data)
+          sendContextToEasySystem(data)
               .finally(() => {
-                integrations[integName](data, (err, _updated) => {
+              integrations[integName](data, (err, _updated) => {
                   if (err) console.error(`${integName} integration error:`, err);
                   // already ACKed
                 });
@@ -1092,6 +1103,104 @@ const integrations = {
         data.context.session.UserSession.owner = "kore";
         return callback(null, data);
       });
+  },
+
+  // === SBA: DIRECT-SEND integrations ===
+  Cancel_item: function (data, callback) {
+    const orderNumber = data.context.orderNumberForCancelItem;
+    const zipCode = data.context.zipcodeForCancelItem;
+    const text = `Cancel Item having Order Number ${orderNumber} and ZipCode ${zipCode}`;
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Cancel Item", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Cancel Item", data, err, callback));
+  },
+
+  add_new_user_handler: function (data, callback) {
+    const text = "I want to add a new user to my Staples account.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Add New User", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Add New User", data, err, callback));
+  },
+
+  Cancel_Entire_order: function (data, callback) {
+    const orderNumber = data.context.orderNumberForCancelOrder;
+    const zipCode = data.context.zipcodeForCancelOrder;
+    const text = `Cancel the Entire Order having Order Number ${orderNumber} and ZipCode ${zipCode}`;
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Cancel Entire Order", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Cancel Entire Order", data, err, callback));
+  },
+
+  Refund_Check: function (data, callback) {
+    const text = "I want to check my refund status.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Refund", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Refund", data, err, callback));
+  },
+
+  Exchange_Item: function (data, callback) {
+    const text = "I want to return or exchange an item.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Exchange", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Exchange", data, err, callback));
+  },
+
+  change_shipping_address: function (data, callback) {
+    const text =
+      "I want to add a new shipping location to my Staples account (enter address, set delivery preferences, and update contact details).";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Shipping Address", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Shipping Address", data, err, callback));
+  },
+
+  manage_existing_users: function (data, callback) {
+    const text =
+      "I want to manage an existing user on my Staples account (edit details, change roles/permissions, or deactivate).";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Manage Existing User", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Manage Existing User", data, err, callback));
+  },
+
+  reset_password: function (data, callback) {
+    const text = "Reset the password";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Reset Password", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Reset Password", data, err, callback));
+  },
+
+  reset_password_handler: function (data, callback) {
+    const text = "Reset the password";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Reset Password Hook", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Reset Hook", data, err, callback));
+  },
+
+  invoice_or_packing_slip: function (data, callback) {
+    const text = "I need help with an invoice or packing slip.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Invoice", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Invoice", data, err, callback));
+  },
+
+  modify_shipping_location: function (data, callback) {
+    const text = "I want to modify an existing shipping location on my Staples account";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Modify Shipping", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Modify Shipping", data, err, callback));
+  },
+
+  account_id_handler: function (data, callback) {
+    const text = "I need help with my account or user ID.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Account ID", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Account ID", data, err, callback));
+  },
+
+  missing_item: function (data, callback) {
+    const text = "I'm missing an item from my order.";
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Missing Item", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Missing Item", data, err, callback));
   },
 };
 
