@@ -799,21 +799,10 @@ module.exports = {
         channel: "Kore",
       };
 
-      // SBA webhook map (additional integrations)
+      // SBA webhook map (only package tracking and return status)
       const webhookMap = {
-        CancelItemHook: "Cancel_item",
-        CancelEntireHook: "Cancel_Entire_order",
-        RefundHook: "Refund_Check",
+        easySystemHook: "package_tracking_handover",
         ReturnStatusHook: "Check_Return",
-        ExchangeHook: "Exchange_Item",
-        ShippingHook: "change_shipping_address",
-        ExistingHook: "manage_existing_users",
-        NewHook: "add_new_user_handler",
-        easyInvoiceHook: "invoice_or_packing_slip",
-        ModifyHook: "modify_shipping_location",
-        ResetHook: "reset_password_handler",
-        AccountHook: "account_id_handler",
-        MissingHook: "missing_item",
       };
 
       const SCRIPT_MODE = new Set([
@@ -927,15 +916,15 @@ module.exports = {
           return;
         }
 
-        // SBA additional component handlers (additive)
+        // SBA component handlers (only package tracking and return status)
         if (integName && typeof integrations[integName] === "function") {
           const isScriptMode = SCRIPT_MODE.has(integName);
 
           if (isScriptMode) {
             data._via_webhook = true; // informational only
-          sendContextToEasySystem(data)
+            sendContextToEasySystem(data)
               .finally(() => {
-              integrations[integName](data, (err, _updated) => {
+                integrations[integName](data, (err, _updated) => {
                   if (err) console.error(`${integName} integration error:`, err);
                   // already ACKed
                 });
@@ -998,93 +987,9 @@ module.exports = {
 // =============================
 
 const integrations = {
-  // Base Quill integration: keep unchanged
-  package_tracking_handover: function (data, callback) {
-    const correlationId = enhancedLogger.generateCorrelationId();
-
-    try {
-      const orderNumber =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities
-          .orderNumber || data.context.session.BotUserSession.orderNumber;
-      const zipCode =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities.zipCode ||
-        data.context.session.BotUserSession.zipCode;
-
-      const requestData = {
-        text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
-        externalConversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        conversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        businessUnit: data.context.session.BotUserSession.businessUnit,
-      };
-
-      // ⏳ Wait for safeEasySystemCall to finish before responding
-      safeEasySystemCall(
-        "easysystem-send-api",
-        easysytemUrl,
-        requestData,
-        data,
-        callback,
-        correlationId,
-        (response, data, callback) => {
-          try {
-            console.log("Easysystem response:", JSON.stringify(response.data));
-            processEasySystemResponse(data, response.data);
-            if (response.data.transfer || data.agent_transfer === true) {
-              data.context.session.BotUserSession.transfer = true;
-              return sdk.sendBotMessage(data, callback);
-            }
-            if (response.data.endConversation) {
-              data.context.session.BotUserSession.endConversationFromEasySystem = true;
-            }
-            // ✅ Once EasySystem response is processed, send user message
-            return sdk.sendUserMessage(data, callback);
-          } catch (innerError) {
-            console.error("Error processing EasySystem response:", innerError);
-            return triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          }
-        }
-      )
-        .then(() => {
-          // This runs *after* safeEasySystemCall has completed successfully
-          console.log(
-            "✅ safeEasySystemCall completed for package_tracking_handover"
-          );
-        })
-        .catch((err) => {
-          console.error("❌ safeEasySystemCall failed:", err?.message || err);
-          triggerAgentTransfer(
-            data,
-            callback,
-            "Please hold while I transfer you to an agent."
-          );
-        });
-    } catch (error) {
-      enhancedLogger.error(
-        "PACKAGE_TRACKING_ERROR",
-        {
-          error: error.message,
-          conversationId:
-            data.context?.session?.BotUserSession?.conversationSessionId,
-        },
-        correlationId
-      );
-      return triggerAgentTransfer(
-        data,
-        callback,
-        "Please hold while I transfer you to an agent."
-      );
-    }
-  },
-
   // === SBA: SCRIPT MODE integrations ===
   // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
-  package_tracking_handover_sba: function (data, callback) {
+  package_tracking_handover: function (data, callback) {
     const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
@@ -1187,104 +1092,6 @@ const integrations = {
         data.context.session.UserSession.owner = "kore";
         return callback(null, data);
       });
-  },
-
-  // === SBA: DIRECT-SEND integrations ===
-  Cancel_item: function (data, callback) {
-    const orderNumber = data.context.orderNumberForCancelItem;
-    const zipCode = data.context.zipcodeForCancelItem;
-    const text = `Cancel Item having Order Number ${orderNumber} and ZipCode ${zipCode}`;
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Cancel Item", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Cancel Item", data, err, callback));
-  },
-
-  add_new_user_handler: function (data, callback) {
-    const text = "I want to add a new user to my Staples account.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Add New User", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Add New User", data, err, callback));
-  },
-
-  Cancel_Entire_order: function (data, callback) {
-    const orderNumber = data.context.orderNumberForCancelOrder;
-    const zipCode = data.context.zipcodeForCancelOrder;
-    const text = `Cancel the Entire Order having Order Number ${orderNumber} and ZipCode ${zipCode}`;
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Cancel Entire Order", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Cancel Entire Order", data, err, callback));
-  },
-
-  Refund_Check: function (data, callback) {
-    const text = "I want to check my refund status.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Refund", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Refund", data, err, callback));
-  },
-
-  Exchange_Item: function (data, callback) {
-    const text = "I want to return or exchange an item.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Exchange", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Exchange", data, err, callback));
-  },
-
-  change_shipping_address: function (data, callback) {
-    const text =
-      "I want to add a new shipping location to my Staples account (enter address, set delivery preferences, and update contact details).";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Shipping Address", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Shipping Address", data, err, callback));
-  },
-
-  manage_existing_users: function (data, callback) {
-    const text =
-      "I want to manage an existing user on my Staples account (edit details, change roles/permissions, or deactivate).";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Manage Existing User", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Manage Existing User", data, err, callback));
-  },
-
-  reset_password: function (data, callback) {
-    const text = "Reset the password";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Reset Password", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Reset Password", data, err, callback));
-  },
-
-  reset_password_handler: function (data, callback) {
-    const text = "Reset the password";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Reset Password Hook", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Reset Hook", data, err, callback));
-  },
-
-  invoice_or_packing_slip: function (data, callback) {
-    const text = "I need help with an invoice or packing slip.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Invoice", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Invoice", data, err, callback));
-  },
-
-  modify_shipping_location: function (data, callback) {
-    const text = "I want to modify an existing shipping location on my Staples account";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Modify Shipping", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Modify Shipping", data, err, callback));
-  },
-
-  account_id_handler: function (data, callback) {
-    const text = "I need help with my account or user ID.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Account ID", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Account ID", data, err, callback));
-  },
-
-  missing_item: function (data, callback) {
-    const text = "I'm missing an item from my order.";
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Missing Item", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Missing Item", data, err, callback));
   },
 };
 
