@@ -999,7 +999,6 @@ module.exports = {
 
 const integrations = {
   // === SBA: SCRIPT MODE integrations ===
-  // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
   package_tracking_handover: function (data, callback) {
     const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
@@ -1042,8 +1041,9 @@ const integrations = {
       .catch((error) => {
         const status = error?.response?.status;
         const resp = error?.response?.data;
-        console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
+        console.error("Package Tracking Error:", status, resp || error.message);
 
+        // Safe fallback so Script node still shows something
         data.context.session.BotUserSession.render = "text/plain";
         data.context.session.BotUserSession.renderr =
           "Sorry, I couldn't fetch your tracking details right now.";
