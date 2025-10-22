@@ -832,97 +832,38 @@ module.exports = {
         // best-effort ack; continue processing
       }
 
-      // Continue processing asynchronously after ACK
-      setImmediate(() => {
-        const asyncCb = (err) => {
-          if (err) console.error("Async post-ACK error:", err);
-        };
-        // Existing Quill handling for easySystemHook (preserved)
-        if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "Q"
-        ) {
-          console.log("Quill Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
+        // Continue processing asynchronously after ACK
+        setImmediate(() => {
+          const asyncCb = (err) => {
+            if (err) console.error("Async post-ACK error:", err);
+          };
+          
+          // SBA Business Unit handling for easySystemHook
+          if (
+            componentName === "easySystemHook" &&
+            data.context.session.BotUserSession.businessUnit === "SA"
+          ) {
+            console.log("SBA Business Unit");
+            contextData.entityMap =
+              data.context.session.BotUserSession.entityPayload;
 
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            correlationId,
-            (response, data, callback) => {
-              console.log(
-                "✅ Context updated for conversationId " 
-                  + contextData.externalConversationId
-              );
-            }
-          )
-            .then(() => {
-              // Only runs AFTER safeEasySystemCall completes successfully
-              integrations.package_tracking_handover(data, asyncCb);
-            })
-            .catch((err) => {
-              console.error(
-                "❌ Failed to update context before package tracking:",
-                err?.message || err
-              );
-              triggerAgentTransfer(
-                data,
-                asyncCb,
-                "Please hold while I transfer you to an agent."
-              );
-            });
-          return;
-        } else if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "C"
-        ) {
-          console.log("DOTCOM Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
-
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            (response, data, callback) => {
-              console.log(
-                "Context updated for conversationId " 
-                  + contextData.externalConversationId
-              );
-              integrations.package_tracking_handover(data, asyncCb);
-            }
-          );
-          return;
-        } else if (
-          componentName === "easySystemHook" &&
-          data.context.session.BotUserSession.businessUnit === "SA"
-        ) {
-          console.log("SBA Business Unit");
-          contextData.entityMap =
-            data.context.session.BotUserSession.entityPayload;
-
-          safeEasySystemCall(
-            "easysystem-context-api",
-            contextUrl,
-            contextData,
-            data,
-            asyncCb,
-            (response, data, callback) => {
-              console.log(
-                "Context updated for conversationId " 
-                 + contextData.externalConversationId
-              );
-              integrations.package_tracking_handover(data, asyncCb);
-            }
-          );
-          return;
-        }
+            safeEasySystemCall(
+              "easysystem-context-api",
+              contextUrl,
+              contextData,
+              data,
+              asyncCb,
+              correlationId,
+              (response, data, callback) => {
+                console.log(
+                  "Context updated for conversationId " 
+                   + contextData.externalConversationId
+                );
+                integrations.package_tracking_handover(data, asyncCb);
+              }
+            );
+            return;
+          }
 
         // SBA additional component handlers (additive)
         if (integName && typeof integrations[integName] === "function") {
