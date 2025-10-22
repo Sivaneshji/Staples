@@ -816,10 +816,7 @@ module.exports = {
         MissingHook: "missing_item",
       };
 
-      const SCRIPT_MODE = new Set([
-        "package_tracking_handover",
-        "Check_Return",
-      ]);
+      const SCRIPT_MODE = new Set([]);
 
       const integName = webhookMap[componentName];
 
@@ -998,111 +995,23 @@ module.exports = {
 // =============================
 
 const integrations = {
-  // === SBA: SCRIPT MODE integrations ===
+  // === SBA: DIRECT-SEND integrations ===
   package_tracking_handover: function (data, callback) {
-    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
-
-    const requestData = {
-      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
-    };
-
-    apiClient
-      .post(easysytemUrl, requestData, {
-        headers: { ...easyHeaders(data) },
-        timeout: 30000,
-        data,
-      })
-      .then((response) => {
-        const res = response.data || {};
-
-        data.context.session.BotUserSession.render = res.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = res.text || "";
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
-          data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data);
-      })
-      .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("Package Tracking Error:", status, resp || error.message);
-
-        // Safe fallback so Script node still shows something
-        data.context.session.BotUserSession.render = "text/plain";
-        data.context.session.BotUserSession.renderr =
-          "Sorry, I couldn't fetch your tracking details right now.";
-        data.context.session.UserSession.owner = "kore";
-        return callback(null, data);
-      });
+    const text = `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`;
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Package Tracking", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Package Tracking", data, err, callback));
   },
 
   Check_Return: function (data, callback) {
-    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
-
-    const requestData = {
-      text: `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
-    };
-
-    apiClient
-      .post(easysytemUrl, requestData, {
-        headers: { ...easyHeaders(data) },
-        timeout: 30000,
-        data,
-      })
-      .then((response) => {
-        const res = response.data || {};
-
-        data.context.session.BotUserSession.render = res.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = res.text || "";
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
-          data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data);
-      })
-      .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("Return Status Error:", status, resp || error.message);
-
-        // Safe fallback so Script node still shows something
-        data.context.session.BotUserSession.render = "text/plain";
-        data.context.session.BotUserSession.renderr =
-          "Sorry, I couldn't fetch your return status.";
-        data.context.session.UserSession.owner = "kore";
-        return callback(null, data);
-      });
+    const text = `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`;
+    easySendText(data, text)
+      .then((res) => handleEasySendOutcome_Direct("Return Status", data, res, callback))
+      .catch((err) => handleEasySendError_Direct("Return Status", data, err, callback));
   },
 
   // === SBA: DIRECT-SEND integrations ===
