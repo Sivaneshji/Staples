@@ -816,7 +816,10 @@ module.exports = {
         MissingHook: "missing_item",
       };
 
-      const SCRIPT_MODE = new Set([]);
+      const SCRIPT_MODE = new Set([
+        "package_tracking_handover",
+        "Check_Return",
+      ]);
 
       const integName = webhookMap[componentName];
 
@@ -832,38 +835,97 @@ module.exports = {
         // best-effort ack; continue processing
       }
 
-        // Continue processing asynchronously after ACK
-        setImmediate(() => {
-          const asyncCb = (err) => {
-            if (err) console.error("Async post-ACK error:", err);
-          };
-          
-          // SBA Business Unit handling for easySystemHook
-          if (
-            componentName === "easySystemHook" &&
-            data.context.session.BotUserSession.businessUnit === "SA"
-          ) {
-            console.log("SBA Business Unit");
-            contextData.entityMap =
-              data.context.session.BotUserSession.entityPayload;
+      // Continue processing asynchronously after ACK
+      setImmediate(() => {
+        const asyncCb = (err) => {
+          if (err) console.error("Async post-ACK error:", err);
+        };
+        // Existing Quill handling for easySystemHook (preserved)
+        if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "Q"
+        ) {
+          console.log("Quill Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
 
-            safeEasySystemCall(
-              "easysystem-context-api",
-              contextUrl,
-              contextData,
-              data,
-              asyncCb,
-              correlationId,
-              (response, data, callback) => {
-                console.log(
-                  "Context updated for conversationId " 
-                   + contextData.externalConversationId
-                );
-                integrations.package_tracking_handover(data, asyncCb);
-              }
-            );
-            return;
-          }
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            correlationId,
+            (response, data, callback) => {
+              console.log(
+                "✅ Context updated for conversationId " 
+                  + contextData.externalConversationId
+              );
+            }
+          )
+            .then(() => {
+              // Only runs AFTER safeEasySystemCall completes successfully
+              integrations.package_tracking_handover(data, asyncCb);
+            })
+            .catch((err) => {
+              console.error(
+                "❌ Failed to update context before package tracking:",
+                err?.message || err
+              );
+              triggerAgentTransfer(
+                data,
+                asyncCb,
+                "Please hold while I transfer you to an agent."
+              );
+            });
+          return;
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "C"
+        ) {
+          console.log("DOTCOM Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " 
+                  + contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+          return;
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "SA"
+        ) {
+          console.log("SBA Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " 
+                 + contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+          return;
+        }
 
         // SBA additional component handlers (additive)
         if (integName && typeof integrations[integName] === "function") {
@@ -936,23 +998,114 @@ module.exports = {
 // =============================
 
 const integrations = {
-  // === SBA: DIRECT-SEND integrations ===
+  // === SBA: SCRIPT MODE integrations ===
+  // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
   package_tracking_handover: function (data, callback) {
+    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
-    const text = `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`;
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Package Tracking", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Package Tracking", data, err, callback));
+
+    const requestData = {
+      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
+      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
+      conversationId: data.context.session.BotUserSession.conversationSessionId,
+      businessUnit: buHeader,
+    };
+
+    apiClient
+      .post(easysytemUrl, requestData, {
+        headers: { ...easyHeaders(data) },
+        timeout: 30000,
+        data,
+      })
+      .then((response) => {
+        const res = response.data || {};
+
+        data.context.session.BotUserSession.content = res.contentType;
+        data.context.session.BotUserSession.trackOrder = res.text;
+
+        if (res.transfer) {
+          data.context.session.BotUserSession.transfer = true;
+          data.agent_transfer = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+        if (res.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+
+        // Ensure next node runs (Script)
+        data.context.session.UserSession.owner = "kore";
+
+        return callback(null, data);
+      })
+      .catch((error) => {
+        const status = error?.response?.status;
+        const resp = error?.response?.data;
+        console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
+
+        // data.context.session.BotUserSession.render = "text/plain";
+        // data.context.session.BotUserSession.renderr =
+        //   "Sorry, I couldn't fetch your tracking details right now.";
+        // data.context.session.UserSession.owner = "kore";
+        data.context.session.BotUserSession.trackOrder  = "text/plain";
+        data.context.session.BotUserSession.content = "Sorry, I couldn't fetch your tracking details right now.";
+        data.context.session.UserSession.owner = "kore";
+        return callback(null, data);
+      });
   },
 
   Check_Return: function (data, callback) {
+    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
-    const text = `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`;
-    easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Return Status", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Return Status", data, err, callback));
+
+    const requestData = {
+      text: `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`,
+      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
+      conversationId: data.context.session.BotUserSession.conversationSessionId,
+      businessUnit: buHeader,
+    };
+
+    apiClient
+      .post(easysytemUrl, requestData, {
+        headers: { ...easyHeaders(data) },
+        timeout: 30000,
+        data,
+      })
+      .then((response) => {
+        const res = response.data || {};
+
+        data.context.session.BotUserSession.render = res.contentType || "text/plain";
+        data.context.session.BotUserSession.renderr = res.text || "";
+
+        if (res.transfer) {
+          data.context.session.BotUserSession.transfer = true;
+          data.agent_transfer = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+        if (res.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem = true;
+          data.context.session.UserSession.owner = "kore";
+        }
+
+        // Ensure next node runs (Script)
+        data.context.session.UserSession.owner = "kore";
+
+        return callback(null, data);
+      })
+      .catch((error) => {
+        const status = error?.response?.status;
+        const resp = error?.response?.data;
+        console.error("Return Status Error:", status, resp || error.message);
+
+        // Safe fallback so Script node still shows something
+        data.context.session.BotUserSession.render = "text/plain";
+        data.context.session.BotUserSession.renderr =
+          "Sorry, I couldn't fetch your return status.";
+        data.context.session.UserSession.owner = "kore";
+        return callback(null, data);
+      });
   },
 
   // === SBA: DIRECT-SEND integrations ===
