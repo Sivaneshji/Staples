@@ -181,6 +181,8 @@ async function safeEasySystemCall(
       headers: {
         "Content-Type": "application/json",
         "business-unit": data.context.session.BotUserSession.businessUnit,
+        ...(url === contextUrl ? { "isLoggedIn": getIsLoggedIn(data) } : {}),
+        ...(url === easysytemUrl ? { "isLoggedIn": getIsLoggedIn(data) } : {}),
       },
       timeout: 30000,
       data, // optional: some middlewares read this
@@ -559,19 +561,13 @@ module.exports = {
     try {
       console.log("component name: " + componentName);
 
-      const contextData = {
-        externalConversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        conversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        assistantType: "STANDARD",
-        channel: "Kore",
-      };
-
       // We only route ES context updates for DOTCOM (business unit "C")
       if (data.context.session.BotUserSession.businessUnit !== "C") {
         return sdk.sendWebhookResponse(data, callback);
       }
+
+      // Build context payload with login flag and entity mapping
+      const { headers, body: contextData } = buildEasySystemContextPayload(data);
 
       // SBA-style webhook mapping
       const webhookMap = {
@@ -613,23 +609,39 @@ module.exports = {
       // SCRIPT MODE: stash + ACK once; Script node will render next
       if (isScriptMode) {
         data._via_webhook = true; // informational
-        updateESContextThen(contextUrl, contextData, data, callback, () => {
-          console.log(
-            "Context updated for conversationId " + contextData.externalConversationId
-          );
-          return integrations[integName](data, callback);
-        }, correlationId);
+        safeEasySystemCall(
+          "easysystem-context-api",
+          contextUrl,
+          contextData,
+          data,
+          callback,
+          correlationId,
+          () => {
+            console.log(
+              "Context updated for conversationId " + contextData.externalConversationId
+            );
+            return integrations[integName](data, callback);
+          }
+        );
         return;
       }
 
       // DIRECT-SEND MODE: send chat immediately, no ACK here
       // Do NOT set _via_webhook; we WANT messaging to go out directly
-      updateESContextThen(contextUrl, contextData, data, callback, () => {
-        console.log(
-          "Context updated for conversationId " + contextData.externalConversationId
-        );
-        return integrations[integName](data, callback);
-      }, correlationId);
+      safeEasySystemCall(
+        "easysystem-context-api",
+        contextUrl,
+        contextData,
+        data,
+        callback,
+        correlationId,
+        () => {
+          console.log(
+            "Context updated for conversationId " + contextData.externalConversationId
+          );
+          return integrations[integName](data, callback);
+        }
+      );
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
@@ -697,6 +709,95 @@ module.exports = {
     enhancedLogger.info("ES-Dotcom Bot cleanup completed");
   },
 };
+
+// ---- Context building helpers (from SBA code) ---------------------------------------------
+
+function buOf(data) {
+  return data?.context?.session?.BotUserSession?.businessUnit || "C";
+}
+
+function pickFirst(...vals) {
+  for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
+  return undefined;
+}
+
+// Build /context-load payload from entities + session + customData
+function buildEasySystemContextPayload(data) {
+  const s  = data.context?.session || {};
+  const bu = s.BotUserSession?.businessUnit || "C";
+  const convId = s.BotUserSession?.conversationSessionId;
+
+  const e = data.context?.entities || {};
+  const profile = s.BotUserSession?.userProfile || {};
+  const user = s.UserSession || {};
+  const cd = s.BotUserSession?.customData || {};
+
+  const cartFirstZip = cd.cart?.lines?.[0]?.zipcode;
+
+  const ACCOUNT_NUMBER = pickFirst(
+    e.ACCOUNT_NUMBER, profile.ACCOUNT_NUMBER, user.ACCOUNT_NUMBER,
+    cd.accountNumber, cd.master
+  );
+  const DIVISION = pickFirst(
+    e.DIVISION, profile.DIVISION, user.DIVISION,
+    cd.div
+  );
+  const USER_ID = pickFirst(
+    e.USER_ID, profile.USER_ID, user.USER_ID, profile.userId,
+    cd.newUserID, cd.userid
+  );
+  const CUSTOMER_NUMBER = pickFirst(
+    e.CUSTOMER_NUMBER, profile.CUSTOMER_NUMBER, user.CUSTOMER_NUMBER,
+    cd.accountNumber, cd.master
+  );
+  const ORDER_NUMBER = pickFirst(
+    e.ORDER_NUMBER, e.orderNumberCollect, e.orderNumberEntity, e.orderEntity
+  );
+  const EMAIL = pickFirst(
+    e.EMAIL, profile.EMAIL, user.emailId, user.email,
+    cd.email
+  );
+  const ZIPCODE = pickFirst(
+    e.ZIPCODE, e.zipCodeCollect, e.zipCodeEntity, e.zipEntity, e.ZipCodeReturn, e.getZipCode, e.modifyZipCode,
+    cd.zipcode, cd.shiptozipcode, cartFirstZip
+  );
+
+  const isLoggedIn = String(Boolean(
+    pickFirst(
+      s.BotUserSession?.isLoggedIn, user.isLoggedIn, profile.isLoggedIn,
+      cd.loggedIn, EMAIL || CUSTOMER_NUMBER
+    )
+  ));
+
+  return {
+    headers: { "Content-Type": "application/json", "business-unit": bu },
+    body: {
+      externalConversationId: convId,
+      conversationId: convId,
+      assistantType: "STANDARD",
+      entityMap: {
+        ...(CUSTOMER_NUMBER ? { CUSTOMER_NUMBER: String(CUSTOMER_NUMBER)} : {}),
+        ...(ORDER_NUMBER    ? { ORDER_NUMBER:    String(ORDER_NUMBER)   } : {}),
+        ...(EMAIL           ? { EMAIL:           String(EMAIL)          } : {}),
+        ...(ACCOUNT_NUMBER  ? { ACCOUNT_NUMBER:  String(ACCOUNT_NUMBER) } : {}),
+        ...(DIVISION        ? { DIVISION:        String(DIVISION)       } : {}),
+        ...(USER_ID         ? { USER_ID:         String(USER_ID)        } : {}),
+        ...(ZIPCODE         ? { ZIPCODE:         String(ZIPCODE)        } : {}),
+      },
+      loggedIn: isLoggedIn,
+      channel: "Kore"
+    }
+  };
+}
+
+function getIsLoggedIn(data) {
+  try {
+    const { body } = buildEasySystemContextPayload(data);
+    return body.loggedIn; // "true" or "false"
+  } catch {
+    return "false";
+  }
+}
 
 // ---- Webhook context helper (DRY for all routes) ---------------------------------------------
 
