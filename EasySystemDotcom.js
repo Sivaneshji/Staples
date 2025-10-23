@@ -843,12 +843,14 @@ module.exports = {
       // ACK webhook immediately to avoid RequestAgent/ESOCKETTIMEDOUT
       try {
         data.status = "success";
+        console.log("🔍 Sending webhook response for component:", componentName);
         if (typeof sdk.sendWebhookResponse === "function") {
           sdk.sendWebhookResponse(data, callback);
         } else {
           callback(null, data);
         }
-      } catch (_) {
+      } catch (error) {
+        console.error("🔍 Webhook response error:", error);
         // best-effort ack; continue processing
       }
 
@@ -879,6 +881,7 @@ module.exports = {
                 "Context updated for conversationId " 
                  + contextData.externalConversationId
               );
+              console.log("🔍 About to call package_tracking_handover integration");
               integrations.package_tracking_handover(data, asyncCb);
             }
           );
@@ -982,7 +985,13 @@ const integrations = {
         // Set session variables exactly like the working code
         data.context.session.BotUserSession.trackOrder = response.data.text;
         data.context.session.BotUserSession.content = response.data.contentType;
-        data.context.session.UserSession.owner = "easysystem";
+        
+        // Debug what we're setting for the script node
+        console.log("🔍 Setting trackOrder for script node:", data.context.session.BotUserSession.trackOrder);
+        console.log("🔍 Setting content for script node:", data.context.session.BotUserSession.content);
+        console.log("🔍 trackOrder length:", data.context.session.BotUserSession.trackOrder?.length);
+        console.log("🔍 trackOrder includes SKU:", data.context.session.BotUserSession.trackOrder?.includes("SKU"));
+        console.log("🔍 trackOrder includes 'Sorry'", data.context.session.BotUserSession.trackOrder?.includes("Sorry"));
         
         // Handle agent transfer like the working code
         if (response.data.transfer) {
@@ -997,9 +1006,15 @@ const integrations = {
           console.log("is conversation end new = " + data.context.session.BotUserSession.endConversationFromEasySystem);
           console.log("setting owner as kore");
           data.context.session.UserSession.owner = "kore";
+        } else {
+          // For normal responses, set owner to kore so script node can run
+          data.context.session.UserSession.owner = "kore";
+          console.log("🔍 Set owner to kore for script node execution");
         }
 
-        return sdk.sendUserMessage(data, callback);
+        // Don't send user message - let the script node handle the response
+        console.log("🔍 Integration completed, script node should handle response");
+        return callback(null, data);
       })
       .catch((error) => {
         console.error("package_tracking_handover error:", error?.message || error);
@@ -1035,7 +1050,10 @@ const integrations = {
         // Set session variables exactly like the working code
         data.context.session.BotUserSession.returnStatus = response.data.text;
         data.context.session.BotUserSession.content = response.data.contentType;
-        data.context.session.UserSession.owner = "easysystem";
+        
+        // Debug what we're setting for the script node
+        console.log("🔍 Setting returnStatus for script node:", data.context.session.BotUserSession.returnStatus);
+        console.log("🔍 Setting content for script node:", data.context.session.BotUserSession.content);
         
         // Handle agent transfer like the working code
         if (response.data.transfer) {
@@ -1050,9 +1068,15 @@ const integrations = {
           console.log("is conversation end new = " + data.context.session.BotUserSession.endConversationFromEasySystem);
           console.log("setting owner as kore");
           data.context.session.UserSession.owner = "kore";
+        } else {
+          // For normal responses, set owner to kore so script node can run
+          data.context.session.UserSession.owner = "kore";
+          console.log("🔍 Set owner to kore for script node execution");
         }
 
-        return sdk.sendUserMessage(data, callback);
+        // Don't send user message - let the script node handle the response
+        console.log("🔍 Integration completed, script node should handle response");
+        return callback(null, data);
       })
       .catch((error) => {
         console.error("Check_Return error:", error?.message || error);
