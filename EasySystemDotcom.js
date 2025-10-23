@@ -151,6 +151,23 @@ function triggerAgentTransfer(data, callback, messageIfAny) {
   }
 }
 
+function handleAgentTransfer({ response, data, callback, sdk }) {
+  try {
+    if (response?.data?.transfer) {
+      data.context.session.BotUserSession.transfer = response.data.transfer;
+      console.log("Transfer to agent new = " + data.context.session.BotUserSession.transfer);
+      console.log("setting owner as kore");
+      data.context.session.UserSession.owner = 'kore';
+      data.agent_transfer = true;
+      sdk.sendBotMessage(data, callback);
+      return true; // caller can early-return to avoid double-sends
+    }
+  } catch (e) {
+    console.error("handleAgentTransfer error:", e?.message || e);
+  }
+  return false;
+}
+
 async function safeEasySystemCall(
   serviceName,
   url,
@@ -942,15 +959,15 @@ const integrations = {
   // === SBA: SCRIPT MODE integrations ===
   // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
   package_tracking_handover: function (data, callback) {
-    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
+    const text = `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`;
 
     const requestData = {
-      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
+      text,
       externalConversationId: data.context.session.BotUserSession.conversationSessionId,
       conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
+      businessUnit: data.context.session.BotUserSession.businessUnit,
     };
 
     apiClient
@@ -960,80 +977,50 @@ const integrations = {
         data,
       })
       .then((response) => {
-        const res = response.data || {};
+        console.log("Easysystem response:", JSON.stringify(response.data));
         
-        // Debug logging to see what we're getting
-        console.log("🔍 Package Tracking Response:", JSON.stringify(res, null, 2));
-        console.log("🔍 Response text:", res.text);
-        console.log("🔍 Response contentType:", res.contentType);
-
-        // Set the correct session variables for the script node
-        // Handle different possible response structures
-        const responseText = res.text || res.message || res.content || res.response || "";
-        const responseContentType = res.contentType || res.type || "text/plain";
+        // Set session variables exactly like the working code
+        data.context.session.BotUserSession.trackOrder = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
+        data.context.session.UserSession.owner = "easysystem";
         
-        // If no response text, provide a test response for debugging
-        if (!responseText || responseText.trim() === "") {
-          console.log("⚠️ Empty response from EasySystem, using test data");
-          data.context.session.BotUserSession.trackOrder = `- *SKU*: 12345
-- *Product Description*: Test Product
-- *Tracking Status*: Shipped
-- *Expected Delivery Date*: 2024-01-15`;
-          data.context.session.BotUserSession.content = "text/plain";
-        } else {
-          data.context.session.BotUserSession.trackOrder = responseText;
-          data.context.session.BotUserSession.content = responseContentType;
-        }
-
-        // Debug what we're setting
-        console.log("🔍 Setting trackOrder:", data.context.session.BotUserSession.trackOrder);
-        console.log("🔍 Setting content:", data.context.session.BotUserSession.content);
-        
-        // Additional debug for script node compatibility
-        console.log("🔍 trackOrder length:", data.context.session.BotUserSession.trackOrder?.length);
-        console.log("🔍 trackOrder type:", typeof data.context.session.BotUserSession.trackOrder);
-        console.log("🔍 trackOrder includes SKU:", data.context.session.BotUserSession.trackOrder?.includes("SKU"));
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
+        // Handle agent transfer like the working code
+        if (response.data.transfer) {
+          data.context.session.BotUserSession.transfer = response.data.transfer;
+          console.log("Transfer to agent new = " + data.context.session.BotUserSession.transfer);
+          console.log("setting owner as kore");
+          data.context.session.UserSession.owner = "kore";
           data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
+          return sdk.sendBotMessage(data, callback);
+        } else if (response.data.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem = response.data.endConversation;
+          console.log("is conversation end new = " + data.context.session.BotUserSession.endConversationFromEasySystem);
+          console.log("setting owner as kore");
           data.context.session.UserSession.owner = "kore";
         }
 
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data);
+        return sdk.sendUserMessage(data, callback);
       })
       .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
-
-        // Set fallback values for the script node
-        data.context.session.BotUserSession.trackOrder = "Sorry, I couldn't fetch your tracking details right now.";
-        data.context.session.BotUserSession.content = "text/plain";
-        data.context.session.UserSession.owner = "kore";
-        
-        console.log("❌ Package tracking error - setting fallback values");
-        return callback(null, data);
+        console.error("package_tracking_handover error:", error?.message || error);
+        return triggerAgentTransfer(
+          data,
+          callback,
+          "Please hold while I transfer you to an agent."
+        );
       });
   },
 
   Check_Return: function (data, callback) {
-    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
+    const text = `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`;
 
     const requestData = {
-      text: `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`,
+      text,
       externalConversationId: data.context.session.BotUserSession.conversationSessionId,
       conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
+      businessUnit: data.context.session.BotUserSession.businessUnit,
     };
 
     apiClient
@@ -1043,57 +1030,37 @@ const integrations = {
         data,
       })
       .then((response) => {
-        const res = response.data || {};
+        console.log("Easysystem response:", JSON.stringify(response.data));
         
-        // Debug logging to see what we're getting
-        console.log("🔍 Return Status Response:", JSON.stringify(res, null, 2));
-        console.log("🔍 Response text:", res.text);
-        console.log("🔍 Response contentType:", res.contentType);
-
-        // Set the correct session variables for the script node
-        // Handle different possible response structures
-        const responseText = res.text || res.message || res.content || res.response || "";
-        const responseContentType = res.contentType || res.type || "text/plain";
+        // Set session variables exactly like the working code
+        data.context.session.BotUserSession.returnStatus = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
+        data.context.session.UserSession.owner = "easysystem";
         
-        data.context.session.BotUserSession.returnStatus = responseText;
-        data.context.session.BotUserSession.content = responseContentType;
-
-        // Debug what we're setting
-        console.log("🔍 Setting returnStatus:", data.context.session.BotUserSession.returnStatus);
-        console.log("🔍 Setting content:", data.context.session.BotUserSession.content);
-        
-        // Additional debug for script node compatibility
-        console.log("🔍 returnStatus length:", data.context.session.BotUserSession.returnStatus?.length);
-        console.log("🔍 returnStatus type:", typeof data.context.session.BotUserSession.returnStatus);
-        console.log("🔍 returnStatus includes HTML:", data.context.session.BotUserSession.returnStatus?.includes("<"));
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
+        // Handle agent transfer like the working code
+        if (response.data.transfer) {
+          data.context.session.BotUserSession.transfer = response.data.transfer;
+          console.log("Transfer to agent new = " + data.context.session.BotUserSession.transfer);
+          console.log("setting owner as kore");
+          data.context.session.UserSession.owner = "kore";
           data.agent_transfer = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
+          return sdk.sendBotMessage(data, callback);
+        } else if (response.data.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem = response.data.endConversation;
+          console.log("is conversation end new = " + data.context.session.BotUserSession.endConversationFromEasySystem);
+          console.log("setting owner as kore");
           data.context.session.UserSession.owner = "kore";
         }
 
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
-
-        return callback(null, data);
+        return sdk.sendUserMessage(data, callback);
       })
       .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("Return Status Error:", status, resp || error.message);
-
-        // Set fallback values for the script node
-        data.context.session.BotUserSession.returnStatus = "Sorry, I couldn't fetch your return status.";
-        data.context.session.BotUserSession.content = "text/plain";
-        data.context.session.UserSession.owner = "kore";
-        
-        console.log("❌ Return status error - setting fallback values");
-        return callback(null, data);
+        console.error("Check_Return error:", error?.message || error);
+        return triggerAgentTransfer(
+          data,
+          callback,
+          "Please hold while I transfer you to an agent."
+        );
       });
   },
 
