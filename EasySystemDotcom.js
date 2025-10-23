@@ -882,7 +882,15 @@ module.exports = {
                  + contextData.externalConversationId
               );
               console.log("🔍 About to call package_tracking_handover integration");
-              integrations.package_tracking_handover(data, asyncCb);
+              integrations.package_tracking_handover(data, (err, result) => {
+                if (err) {
+                  console.error("🔍 Integration error:", err);
+                  return asyncCb(err);
+                }
+                console.log("🔍 Integration completed, triggering script node");
+                // Trigger script node by sending a message
+                return sdk.sendUserMessage(data, asyncCb);
+              });
             }
           );
           return;
