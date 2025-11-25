@@ -530,7 +530,7 @@ module.exports = {
     try {
       //console.log("on_webhook: " + JSON.stringify(data));
       console.log("component name: " + componentName);
- 
+
       var contextData = {
         externalConversationId:
           data.context.session.BotUserSession.conversationSessionId,
@@ -539,91 +539,106 @@ module.exports = {
         assistantType: "STANDARD",
         channel: "Kore",
       };
- 
-      if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "Q"
-      ) {
-        console.log("Quill Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
- 
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          correlationId,
-          (response, data, callback) => {
-            console.log(
-              "✅ Context updated for conversationId " +
-                contextData.externalConversationId
-            );
-          }
-        )
-          .then(() => {
-            // Only runs AFTER safeEasySystemCall completes successfully
-            integrations.package_tracking_handover(data, callback);
-          })
-          .catch((err) => {
-            console.error(
-              "❌ Failed to update context before package tracking:",
-              err?.message || err
-            );
-            triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          });
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "C"
-      ) {
-        console.log("DOTCOM Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
- 
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " +
-                contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "SA"
-      ) {
-        console.log("SBA Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
- 
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " +
-                contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-      } else {
-        return sdk.sendWebhookResponse(data, callback);
+
+      // Acknowledge webhook immediately to avoid platform timeouts
+      try {
+        data.status = "success";
+        sdk.sendWebhookResponse(data, callback);
+      } catch (_) {
+        // best-effort ack
       }
+
+      // Continue work asynchronously after ACK
+      setImmediate(() => {
+        const asyncCb = (err) => {
+          if (err) console.error("Async post-ACK error:", err);
+        };
+        if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "Q"
+        ) {
+          console.log("Quill Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            correlationId,
+            (response, data, callback) => {
+              console.log(
+                "✅ Context updated for conversationId " +
+                  contextData.externalConversationId
+              );
+            }
+          )
+            .then(() => {
+              // Only runs AFTER safeEasySystemCall completes successfully
+              integrations.package_tracking_handover(data, asyncCb);
+            })
+            .catch((err) => {
+              console.error(
+                "❌ Failed to update context before package tracking:",
+                err?.message || err
+              );
+              triggerAgentTransfer(
+                data,
+                asyncCb,
+                "Please hold while I transfer you to an agent."
+              );
+            });
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "C"
+        ) {
+          console.log("DOTCOM Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " +
+                  contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+        } else if (
+          componentName === "easySystemHook" &&
+          data.context.session.BotUserSession.businessUnit === "SA"
+        ) {
+          console.log("SBA Business Unit");
+          contextData.entityMap =
+            data.context.session.BotUserSession.entityPayload;
+
+          safeEasySystemCall(
+            "easysystem-context-api",
+            contextUrl,
+            contextData,
+            data,
+            asyncCb,
+            (response, data, callback) => {
+              console.log(
+                "Context updated for conversationId " +
+                  contextData.externalConversationId
+              );
+              integrations.package_tracking_handover(data, asyncCb);
+            }
+          );
+        } else {
+          // nothing else to do post-ACK
+        }
+      });
+      return;
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",

@@ -28,8 +28,8 @@ try {
     );
   }
 } catch (error) {
-  console.warn("âš ï¸  Shared components not found, using fallback implementations");
-  console.warn("âš ï¸  Error:", error.message);
+  console.warn("Ã¢Å¡ Ã¯Â¸Â  Shared components not found, using fallback implementations");
+  console.warn("Ã¢Å¡ Ã¯Â¸Â  Error:", error.message);
 
   ErrorHandler = { handleError: (error, context, callback) => callback(error) };
   CircuitBreaker = {
@@ -97,8 +97,8 @@ try {
   });
   console.log("ApiClientWrapper initialized successfully");
 } catch (error) {
-  console.warn("âš ï¸  ApiClientWrapper failed, using axios fallback");
-  console.warn("âš ï¸  Error:", error.message);
+  console.warn("Ã¢Å¡ Ã¯Â¸Â  ApiClientWrapper failed, using axios fallback");
+  console.warn("Ã¢Å¡ Ã¯Â¸Â  Error:", error.message);
 
   apiClient = {
     post: async (url, data, options = {}) => {
@@ -173,7 +173,7 @@ async function safeEasySystemCall(
   originalCallback
 ) {
   try {
-    // 🪶 ADDED: circuit breaker check remains same
+    // ðŸª¶ ADDED: circuit breaker check remains same
     if (!(await Promise.resolve(circuitBreaker.canExecute(serviceName)))) {
       enhancedLogger.warn(
         "CIRCUIT_BREAKER_OPEN",
@@ -204,7 +204,7 @@ async function safeEasySystemCall(
 
     enhancedLogger.logApiCallStart(url, requestData, correlationId);
 
-    // 🪶 REPLACED this block to always include persistentHeaders
+    // ðŸª¶ REPLACED this block to always include persistentHeaders
     const response = await apiClient.post(url, requestData, {
       headers: {
         ...persistentHeaders,
@@ -214,7 +214,7 @@ async function safeEasySystemCall(
       data, // keep session context for circuit breaker
     });
 
-    // ✅ success path
+    // âœ… success path
     await Promise.resolve(circuitBreaker.recordSuccess("easysystem-api", data));
     enhancedLogger.logApiCallComplete(url, response, correlationId);
 
@@ -456,7 +456,7 @@ async function sendContextToEasySystem(data) {
 
 
     console.log(
-      "ðŸŸ¢ Sending context to EasySystem with payload:",
+      "Ã°Å¸Å¸Â¢ Sending context to EasySystem with payload:",
       JSON.stringify(contextPayload, null, 2)
     );
 
