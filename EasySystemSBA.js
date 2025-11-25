@@ -1,5 +1,5 @@
-
 const { getBotConfig, getBotUrls } = require("./lib/config");
+
 let ErrorHandler,
   CircuitBreaker,
   SessionManager,
@@ -20,7 +20,6 @@ try {
       `HealthMonitor export mismatch; keys: ${HMMod && Object.keys(HMMod)}`
     );
   }
-
   ApiClientWrapper =
     (RAIMod && (RAIMod.ApiClientWrapper || RAIMod.default)) || RAIMod;
   if (typeof ApiClientWrapper !== "function") {
@@ -29,10 +28,8 @@ try {
     );
   }
 } catch (error) {
-  console.warn(
-    "⚠️  Shared components not found, using fallback implementations"
-  );
-  console.warn("⚠️  Error:", error.message);
+  console.warn("âš ï¸  Shared components not found, using fallback implementations");
+  console.warn("âš ï¸  Error:", error.message);
 
   ErrorHandler = { handleError: (error, context, callback) => callback(error) };
   CircuitBreaker = {
@@ -66,14 +63,13 @@ const botName = "EasySystemSBA";
 const botConfig = getBotConfig(botName);
 const botUrls = getBotUrls(botName);
 
-console.log("🔍 DEBUG: botName:", botName);
-console.log("🔍 DEBUG: botConfig:", JSON.stringify(botConfig, null, 2));
-console.log("🔍 DEBUG: botConfig.botIds:", botConfig.botIds);
+console.log(`Initializing bot: ${botName}`);
 
 var sdk = require("./lib/sdk");
 var Promise = sdk.Promise;
 var { makeHttpCall } = require("./makeHttpCall");
 const axios = require("axios");
+
 let logger;
 try {
   logger = require("./lib/logger");
@@ -99,10 +95,10 @@ try {
     baseDelay: 1000,
     maxDelay: 10000,
   });
-  console.log("✅ ApiClientWrapper initialized successfully");
+  console.log("ApiClientWrapper initialized successfully");
 } catch (error) {
-  console.warn("⚠️  ApiClientWrapper failed, using axios fallback");
-  console.warn("⚠️  Error:", error.message);
+  console.warn("âš ï¸  ApiClientWrapper failed, using axios fallback");
+  console.warn("âš ï¸  Error:", error.message);
 
   apiClient = {
     post: async (url, data, options = {}) => {
@@ -128,7 +124,7 @@ try {
       }
     },
   };
-  console.log("✅ Axios fallback initialized successfully");
+  console.log("Axios fallback initialized successfully");
 }
 
 var easysytemUrl = botUrls.sendMessage;
@@ -136,6 +132,7 @@ var easysytemSaveMessageUrl = botUrls.saveMessage;
 var contextUrl = botUrls.contextLoad;
 
 function triggerAgentTransfer(data, callback, messageIfAny) {
+  messageIfAny="I am now connecting you with a staples expert";
   try {
     if (messageIfAny) data.message = messageIfAny;
     data.agent_transfer = true;
@@ -151,6 +148,21 @@ function triggerAgentTransfer(data, callback, messageIfAny) {
   }
 }
 
+function handleAgentTransfer({ response, data, callback, sdk }) {
+  try {
+    if (response?.data?.transfer) {
+      data.context.session.BotUserSession.transfer = response.data.transfer;
+      data.context.session.UserSession.owner = "kore";
+      data.agent_transfer = true;
+      sdk.sendBotMessage(data, callback);
+      return true;
+    }
+  } catch (e) {
+    console.error("handleAgentTransfer error:", e?.message || e);
+  }
+  return false;
+}
+
 async function safeEasySystemCall(
   serviceName,
   url,
@@ -161,9 +173,8 @@ async function safeEasySystemCall(
   originalCallback
 ) {
   try {
-    if (
-      !(await Promise.resolve(circuitBreaker.canExecute(serviceName)))
-    ) {
+    // 🪶 ADDED: circuit breaker check remains same
+    if (!(await Promise.resolve(circuitBreaker.canExecute(serviceName)))) {
       enhancedLogger.warn(
         "CIRCUIT_BREAKER_OPEN",
         {
@@ -173,7 +184,6 @@ async function safeEasySystemCall(
         },
         correlationId
       );
-
       return triggerAgentTransfer(
         data,
         callback,
@@ -181,17 +191,30 @@ async function safeEasySystemCall(
       );
     }
 
+    // ADDED: persistent headers to carry login + user context every turn
+    const persistentHeaders = easyHeaders(data);
+
+    // ADDED: quick debug log (visible in backend logs)
+    enhancedLogger.info("EASYSYSTEM_CALL_HEADERS", {
+      url,
+      headers: persistentHeaders,
+      conversationId:
+        data.context?.session?.BotUserSession?.conversationSessionId,
+    });
+
     enhancedLogger.logApiCallStart(url, requestData, correlationId);
 
+    // 🪶 REPLACED this block to always include persistentHeaders
     const response = await apiClient.post(url, requestData, {
       headers: {
-        "Content-Type": "application/json",
+        ...persistentHeaders,
         "business-unit": data.context.session.BotUserSession.businessUnit,
       },
       timeout: 30000,
-      data, // <-- pass UserSession context for circuit breaker
+      data, // keep session context for circuit breaker
     });
 
+    // ✅ success path
     await Promise.resolve(circuitBreaker.recordSuccess("easysystem-api", data));
     enhancedLogger.logApiCallComplete(url, response, correlationId);
 
@@ -205,11 +228,14 @@ async function safeEasySystemCall(
       circuitBreaker.recordFailure("easysystem-api", data, error)
     );
     enhancedLogger.logApiCallError(url, error, correlationId);
-
-    const errText = "Please hold while I transfer you to an agent.";
-    return triggerAgentTransfer(data, callback, errText);
+    return triggerAgentTransfer(
+      data,
+      callback,
+      "Please hold while I transfer you to an agent."
+    );
   }
 }
+
 
 async function safeMessageSave(
   url,
@@ -219,9 +245,7 @@ async function safeMessageSave(
   successCallback,
   errorCallback
 ) {
-  // Use the provided correlationId if present; otherwise generate one
   const cid = correlationId ?? enhancedLogger.generateCorrelationId();
-
   try {
     const canCall = await Promise.resolve(
       circuitBreaker.canExecute("easysystem-save-api", data)
@@ -239,35 +263,23 @@ async function safeMessageSave(
       if (typeof errorCallback === "function") errorCallback();
     }
     await apiClient.post(url, messageSaveData, {
-      headers: {
-        "Content-Type": "application/json",
-        "X-Correlation-Id": cid,
-      },
+      headers: { "Content-Type": "application/json", "X-Correlation-Id": cid },
       timeout: 30000,
-      // If your apiClient inspects config.data for context, keep it;
-      // otherwise remove to avoid confusion with axios semantics.
-      data, // pass UserSession context for circuit breaker or middleware
+      data,
     });
-    // Mark success in the breaker
     await Promise.resolve(circuitBreaker.recordSuccess("easysystem-save-api"));
-
     enhancedLogger.info(
       "MESSAGE_SAVED_TO_EASYSYSTEM",
       { conversationId: messageSaveData?.externalConversationId },
       cid
     );
-
     if (typeof successCallback === "function") successCallback();
   } catch (saveError) {
-    // Mark failure in the breaker
     try {
       await Promise.resolve(
         circuitBreaker.recordFailure("easysystem-save-api", saveError)
       );
-    } catch (_) {
-      /* best effort */
-    }
-
+    } catch (_) {}
     enhancedLogger.warn(
       "MESSAGE_SAVE_FAILED",
       {
@@ -276,7 +288,6 @@ async function safeMessageSave(
       },
       cid
     );
-
     if (errorCallback) errorCallback(saveError);
   }
 }
@@ -284,7 +295,6 @@ async function safeMessageSave(
 healthMonitor.start();
 
 function processEasySystemResponse(data, responseData) {
-  console.warn(responseData.text);
   data.message = responseData.text;
   if (!responseData.transfer && !responseData.endConversation) {
     data.context.session.UserSession.owner = "easysystem";
@@ -318,82 +328,46 @@ function buildEasySystemContextPayload(data) {
   const bu = s.BotUserSession?.businessUnit || "SA";
   const convId = s.BotUserSession?.conversationSessionId;
 
-  const e = data.context?.entities || {};
-  const profile = s.BotUserSession?.userProfile || {};
-  const user = s.UserSession || {};
-  const cd = s.BotUserSession?.customData || {};
+  const customData = s.BotUserSession?.customData || {};
+  const USER_ID = customData.userid || null;
+  const MASTER_ACCOUNT = customData.master || null;
 
-  const cartFirstZip = cd.cart?.lines?.[0]?.zipcode;
-
-  const ACCOUNT_NUMBER = pickFirst(
-    e.ACCOUNT_NUMBER,
-    profile.ACCOUNT_NUMBER,
-    user.ACCOUNT_NUMBER,
-    cd.accountNumber,
-    cd.master
-  );
-  const DIVISION = pickFirst(e.DIVISION, profile.DIVISION, user.DIVISION, cd.div);
-  const USER_ID = pickFirst(
-    e.USER_ID,
-    profile.USER_ID,
-    user.USER_ID,
-    profile.userId,
-    cd.newUserID,
-    cd.userid
-  );
-  const CUSTOMER_NUMBER = pickFirst(
-    e.CUSTOMER_NUMBER,
-    profile.CUSTOMER_NUMBER,
-    user.CUSTOMER_NUMBER,
-    cd.accountNumber,
-    cd.master
-  );
-  const ORDER_NUMBER = pickFirst(
-    e.ORDER_NUMBER,
-    e.orderNumberCollect,
-    e.orderNumberEntity,
-    e.orderEntity
-  );
-  const EMAIL = pickFirst(e.EMAIL, profile.EMAIL, user.emailId, user.email, cd.email);
-  const ZIPCODE = pickFirst(
-    e.ZIPCODE,
-    e.zipCodeCollect,
-    e.zipCodeEntity,
-    e.zipEntity,
-    e.ZipCodeReturn,
-    e.getZipCode,
-    e.modifyZipCode,
-    cd.zipcode,
-    cd.shiptozipcode,
-    cartFirstZip
-  );
+  if (USER_ID === null || MASTER_ACCOUNT === null) {
+    enhancedLogger.warn("Missing critical session data", {
+      conversationId: convId,
+      missingFields: { USER_ID, MASTER_ACCOUNT },
+    });
+  }
 
   const isLoggedIn = String(
     Boolean(
       pickFirst(
         s.BotUserSession?.isLoggedIn,
-        user.isLoggedIn,
-        profile.isLoggedIn,
-        cd.loggedIn,
-        EMAIL || CUSTOMER_NUMBER
+        s.UserSession.isLoggedIn,
+        s.BotUserSession?.userProfile?.isLoggedIn,
+        customData.loggedIn
       )
     )
   );
 
   return {
-    headers: { "Content-Type": "application/json", "business-unit": bu },
+    headers: {
+      "Content-Type": "application/json",
+      "business-unit": bu,
+      isLoggedIn: isLoggedIn,
+      "x-custom-data": JSON.stringify({
+  USER_ID,
+  MASTER_ACCOUNT,
+})
+
+    },
     body: {
       externalConversationId: convId,
       conversationId: convId,
       assistantType: "STANDARD",
       entityMap: {
-        ...(CUSTOMER_NUMBER ? { CUSTOMER_NUMBER: String(CUSTOMER_NUMBER) } : {}),
-        ...(ORDER_NUMBER ? { ORDER_NUMBER: String(ORDER_NUMBER) } : {}),
-        ...(EMAIL ? { EMAIL: String(EMAIL) } : {}),
-        ...(ACCOUNT_NUMBER ? { ACCOUNT_NUMBER: String(ACCOUNT_NUMBER) } : {}),
-        ...(DIVISION ? { DIVISION: String(DIVISION) } : {}),
-        ...(USER_ID ? { USER_ID: String(USER_ID) } : {}),
-        ...(ZIPCODE ? { ZIPCODE: String(ZIPCODE) } : {}),
+        USER_ID,
+        MASTER_ACCOUNT,
       },
       loggedIn: isLoggedIn,
       channel: "Kore",
@@ -401,22 +375,31 @@ function buildEasySystemContextPayload(data) {
   };
 }
 
-function getIsLoggedIn(data) {
-  try {
-    const { body } = buildEasySystemContextPayload(data);
-    return body.loggedIn; // "true" or "false"
-  } catch (_) {
-    return "false";
-  }
-}
-
 function easyHeaders(data) {
+  const customData = data.context?.session?.BotUserSession?.customData || {};
+  const isLoggedIn = customData.loggedIn ? "true" : "false";
+
+  const USER_ID = customData.userid || null;
+  const MASTER_ACCOUNT = customData.master || null;
+
+  if (USER_ID === null || MASTER_ACCOUNT === null) {
+    enhancedLogger.warn("Missing critical header data", {
+      missingFields: { USER_ID, MASTER_ACCOUNT },
+    });
+  }
+
+  // Only send minimal user context (not full customData)
   return {
     "Content-Type": "application/json",
     "business-unit": buOf(data),
-    isLoggedIn: getIsLoggedIn(data),
+    isLoggedIn,
+    "x-custom-data": JSON.stringify({
+      USER_ID,
+      MASTER_ACCOUNT,
+    }),
   };
 }
+
 
 async function sendContextToEasySystem(data) {
   const correlationId = enhancedLogger.generateCorrelationId();
@@ -437,12 +420,49 @@ async function sendContextToEasySystem(data) {
       return;
     }
 
-    const { body } = buildEasySystemContextPayload(data);
-    const headers = { ...easyHeaders(data) };
+    const s = data.context?.session || {};
+    const bu = s.BotUserSession?.businessUnit || "SA";
+    const convId = s.BotUserSession?.conversationSessionId;
+    const customData = s.BotUserSession?.customData || {};
 
-    enhancedLogger.logApiCallStart(contextUrl, body, correlationId);
+    const USER_ID = customData.userid || null;
+    const MASTER_ACCOUNT = customData.master || null;
+    const isLoggedIn = String(
+      Boolean(
+        s.BotUserSession?.isLoggedIn ||
+          s.UserSession?.isLoggedIn ||
+          customData.loggedIn
+      )
+    );
 
-    await apiClient.post(contextUrl, body, {
+    const contextPayload = {
+      externalConversationId: convId,
+      assistantType: "STANDARD",
+      context: [],
+      entityMap: { USER_ID, MASTER_ACCOUNT },
+      loggedIn: isLoggedIn,
+      channel: "Kore",
+    };
+
+    const headers = {
+  "Content-Type": "application/json",
+  "business-unit": bu,
+  isLoggedIn: isLoggedIn,
+  "x-custom-data": JSON.stringify({
+    USER_ID,
+    MASTER_ACCOUNT,
+  }),
+};
+
+
+    console.log(
+      "ðŸŸ¢ Sending context to EasySystem with payload:",
+      JSON.stringify(contextPayload, null, 2)
+    );
+
+    enhancedLogger.logApiCallStart(contextUrl, contextPayload, correlationId);
+
+    const res = await apiClient.post(contextUrl, contextPayload, {
       headers,
       timeout: 30000,
       data,
@@ -451,13 +471,11 @@ async function sendContextToEasySystem(data) {
     await Promise.resolve(
       circuitBreaker.recordSuccess("easysystem-context-api", data)
     );
-    enhancedLogger.logApiCallComplete(contextUrl, { data: { ok: true } }, correlationId);
+    enhancedLogger.logApiCallComplete(contextUrl, res, correlationId);
   } catch (err) {
-    try {
-      await Promise.resolve(
-        circuitBreaker.recordFailure("easysystem-context-api", data, err)
-      );
-    } catch (_) {}
+    await Promise.resolve(
+      circuitBreaker.recordFailure("easysystem-context-api", data, err)
+    );
     enhancedLogger.logApiCallError(contextUrl, err, correlationId);
   }
 }
@@ -466,7 +484,8 @@ async function easySendText(data, text) {
   const correlationId = enhancedLogger.generateCorrelationId();
   const payload = {
     text,
-    externalConversationId: data.context.session.BotUserSession.conversationSessionId,
+    externalConversationId:
+      data.context.session.BotUserSession.conversationSessionId,
     conversationId: data.context.session.BotUserSession.conversationSessionId,
     businessUnit: buOf(data),
   };
@@ -509,19 +528,13 @@ async function easySendText(data, text) {
 // =============================
 
 function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
-  console.log(`${tag} Response:`, responseData);
-  console.log("is conversation end =", responseData?.endConversation);
-  console.log("Transfer to agent =", responseData?.transfer);
-
   data.message = responseData?.text || "";
-  // Always pass an explicit agent handoff message if transfer
-  const handoffMsg = responseData?.text || "Please hold while I transfer you to an agent.";
+  const handoffMsg =
+    responseData?.text || "Please hold while I transfer you to an agent.";
 
   if (responseData?.transfer) {
     data.context.session.BotUserSession.transfer = true;
-    console.log(`[${tag}] First message is agent transfer — escalating.`);
     if (data._via_webhook) {
-      // In webhook context, don't send messages here; just flag and return
       data.agent_transfer = true;
       data.context.session.UserSession.owner = "kore";
       return callback(null, data);
@@ -534,8 +547,6 @@ function handleEasySendOutcome_Direct(tag, data, responseData, callback) {
     data.context.session.UserSession.owner = "kore";
   }
 
-  // For webhook context we still allow direct-send integrations to push messages,
-  // matching Quill behavior for direct flows.
   processEasySystemResponse(data, responseData);
   return sdk.sendUserMessage(data, callback);
 }
@@ -551,41 +562,29 @@ function handleEasySendError_Direct(tag, data, error, callback) {
   return sdk.sendUserMessage(data, callback);
 }
 
-// =============================
-// EXPORTS (Base Quill  SBA)
-// =============================
-
 module.exports = {
   botId: botConfig.botIds,
   botName: botName,
+
   on_client_event: function (requestId, data, callback) {
     return callback(null, data);
   },
+
   on_user_message: function (requestId, data, callback) {
     const correlationId = enhancedLogger.generateCorrelationId();
-
     try {
-
       let session_owner = data.context.session.UserSession.owner;
+
       if (
         !data.context.session.BotUserSession.businessUnit ||
-        data.context.session.BotUserSession.businessUnit === null ||
-        data.context.session.BotUserSession.businessUnit === undefined
+        !data.context.session.BotUserSession.businessUnit?.toString().trim()
       ) {
-        console.log("businessUnit is null or empty, not saving the message");
         return sdk.sendBotMessage(data, callback);
       }
-      if (
-        !data.message ||
-        data.message === null ||
-        data.message.trim() === ""
-      ) {
-        console.log("message is null or empty, not saving the message");
+
+      if (!data.message || !data.message.trim()) {
         return sdk.sendBotMessage(data, callback);
       }
-      console.log(
-        "businessUnit: " + data.context.session.BotUserSession.businessUnit
-      );
 
       if (session_owner === "easysystem") {
         const requestData = {
@@ -602,22 +601,12 @@ module.exports = {
           role: "user",
           channel: "Kore",
         };
-        console.log("Saving message to Easy System" + data.message);
 
         safeMessageSave(
           easysytemSaveMessageUrl,
           messageSaveData,
           data,
-          correlationId,
-          () => {
-            console.log(
-              "✅ Message saved successfully for conversationId:",
-              messageSaveData.externalConversationId
-            );
-          },
-          (err) => {
-            console.error("❌ Message save failed:", err?.message || err);
-          }
+          correlationId
         );
 
         safeEasySystemCall(
@@ -628,31 +617,19 @@ module.exports = {
           callback,
           correlationId,
           (response, data, callback) => {
-            console.log("Easysystem response:", JSON.stringify(response.data));
             data.message = response.data.text;
-            console.log(
-              "is conversation end = " + response.data.conversationEnd
-            );
-
             if (!!response.data.conversationEnd) {
-              console.log("setting owner as kore");
               data.context.session.UserSession.owner = "kore";
             }
-
             sdk.sendUserMessage(data, callback);
           }
-        )
-          .then(() => {
-            console.log("✅ safeEasySystemCall completed successfully.");
-          })
-          .catch((err) => {
-            console.error("❌ safeEasySystemCall failed:", err?.message || err);
-            triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          });
+        ).catch(() =>
+          triggerAgentTransfer(
+            data,
+            callback,
+            "Please hold while I transfer you to an agent."
+          )
+        );
       } else {
         if (data.message !== null) {
           const messageSaveData = {
@@ -668,19 +645,7 @@ module.exports = {
             easysytemSaveMessageUrl,
             messageSaveData,
             data,
-            correlationId,
-            () => {
-              console.log(
-                "on_user_message:: easysystem message saved for conversationId " 
-                 + messageSaveData.externalConversationId
-              );
-            },
-            (error) => {
-              console.error(
-                "Error updating easysystem context:",
-                error.response ? error.response.data : error.message
-              );
-            }
+            correlationId
           );
         }
         return sdk.sendBotMessage(data, callback);
@@ -695,7 +660,6 @@ module.exports = {
         },
         correlationId
       );
-
       return triggerAgentTransfer(
         data,
         callback,
@@ -708,28 +672,18 @@ module.exports = {
     const correlationId = enhancedLogger.generateCorrelationId();
     try {
       let session_owner = data.context.session.UserSession.owner;
+
       if (
         !data.context.session.BotUserSession.businessUnit ||
-        data.context.session.BotUserSession.businessUnit === null ||
-        data.context.session.BotUserSession.businessUnit === undefined
+        !data.context.session.BotUserSession.businessUnit?.toString().trim()
       ) {
-        console.log("businessUnit is null or empty, not saving the message");
         return sdk.sendUserMessage(data, callback);
       }
-      if (
-        !data.message ||
-        data.message === null ||
-        data.message.trim() === ""
-      ) {
-        console.log("message is null or empty,  not saving the message");
+
+      if (!data.message || !data.message.trim()) {
         return sdk.sendUserMessage(data, callback);
       }
-      console.log(
-        "on_bot_message conversationSessionId [] message:" + data.message
-      );
-      console.log(
-        "businessUnit: " + data.context.session.BotUserSession.businessUnit
-      );
+
       const messageSaveData = {
         text: data.message,
         externalConversationId:
@@ -740,29 +694,14 @@ module.exports = {
       };
 
       if (session_owner === "easysystem") {
-        console.log("on_bot_message blocked by easyssytem owner check");
+        // respect owner; do not save duplicate
       } else {
-        console.log("on_bot_message owner KORE");
-
         safeMessageSave(
           easysytemSaveMessageUrl,
           messageSaveData,
           data,
-          correlationId,
-          () => {
-            console.log(
-              "on_user_message:: easysystem message saved for conversationId " 
-               + messageSaveData.externalConversationId
-            );
-          },
-          (error) => {
-            console.error(
-              "Error updating easysystem context:",
-              error.response ? error.response.data : error.message
-            );
-          }
+          correlationId
         );
-
         return sdk.sendUserMessage(data, callback);
       }
     } catch (error) {
@@ -775,7 +714,6 @@ module.exports = {
         },
         correlationId
       );
-
       return triggerAgentTransfer(
         data,
         callback,
@@ -786,11 +724,10 @@ module.exports = {
 
   on_webhook: function (requestId, data, componentName, callback) {
     const correlationId = enhancedLogger.generateCorrelationId();
-
     try {
-      console.log("component name: " + componentName);
+      console.log("Webhook component:", componentName);
 
-      var contextData = {
+      const contextData = {
         externalConversationId:
           data.context.session.BotUserSession.conversationSessionId,
         conversationId:
@@ -799,7 +736,6 @@ module.exports = {
         channel: "Kore",
       };
 
-      // SBA webhook map (additional integrations)
       const webhookMap = {
         CancelItemHook: "Cancel_item",
         CancelEntireHook: "Cancel_Entire_order",
@@ -814,152 +750,46 @@ module.exports = {
         ResetHook: "reset_password_handler",
         AccountHook: "account_id_handler",
         MissingHook: "missing_item",
+        easySystemHook: "package_tracking_handover",
       };
 
-      const SCRIPT_MODE = new Set([
-        "package_tracking_handover",
-        "Check_Return",
-      ]);
+      const integrationMethod = webhookMap[componentName];
 
-      const integName = webhookMap[componentName];
+      if (!integrationMethod || typeof integrations[integrationMethod] !== "function") {
+        return sdk.sendWebhookResponse(data, callback);
+      }
 
-      // Helper to ACK once (only for SCRIPT_MODE)
-      const ack = (d = data) => {
-        d.status = "success";
-        if (typeof sdk.sendWebhookResponse === "function") {
-          return sdk.sendWebhookResponse(d, callback);
-        }
-        return callback(null, d);
+      const customData = data.context?.session?.BotUserSession?.customData || {};
+      contextData.entityMap = {
+        USER_ID: customData.userid || null,
+        MASTER_ACCOUNT: customData.master || null,
       };
 
-      // Existing Quill handling for easySystemHook (preserved)
-      if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "Q"
-      ) {
-        console.log("Quill Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
+      console.log(`Updating EasySystem context for ${componentName}`);
 
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          correlationId,
-          (response, data, callback) => {
-            console.log(
-              "✅ Context updated for conversationId " 
-                + contextData.externalConversationId
-            );
-          }
-        )
-          .then(() => {
-            // Only runs AFTER safeEasySystemCall completes successfully
-            integrations.package_tracking_handover(data, callback);
-          })
-          .catch((err) => {
-            console.error(
-              "❌ Failed to update context before package tracking:",
-              err?.message || err
-            );
-            triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          });
-        return;
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "C"
-      ) {
-        console.log("DOTCOM Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
-
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " 
-                + contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-        return;
-      } else if (
-        componentName === "easySystemHook" &&
-        data.context.session.BotUserSession.businessUnit === "SA"
-      ) {
-        console.log("SBA Business Unit");
-        contextData.entityMap =
-          data.context.session.BotUserSession.entityPayload;
-
-        safeEasySystemCall(
-          "easysystem-context-api",
-          contextUrl,
-          contextData,
-          data,
-          callback,
-          (response, data, callback) => {
-            console.log(
-              "Context updated for conversationId " 
-               + contextData.externalConversationId
-            );
-            integrations.package_tracking_handover(data, callback);
-          }
-        );
-        return;
-      }
-
-      // SBA additional component handlers (additive)
-      if (integName && typeof integrations[integName] === "function") {
-        const isScriptMode = SCRIPT_MODE.has(integName);
-
-        if (isScriptMode) {
-          data._via_webhook = true; // informational only
-          sendContextToEasySystem(data)
-            .finally(() => {
-              integrations[integName](data, (err, updated) => {
-                if (err) console.error(`${integName} integration error:`, err);
-                return ack(updated || data); // ACK exactly once
-              });
-            });
-          return;
+      return safeEasySystemCall(
+        "easysystem-context-api",
+        contextUrl,
+        contextData,
+        data,
+        callback,
+        correlationId,
+        (response, data, callback) => {
+          console.log(`Context updated for ${componentName}`);
+          return integrations[integrationMethod](data, callback);
         }
-
-        // Direct-send: no ACK; integration will send message immediately
-        sendContextToEasySystem(data)
-          .finally(() => {
-            integrations[integName](data, (err, _updated) => {
-              if (err) console.error(`${integName} integration error:`, err);
-              return; // no webhook ACK here
-            });
-          });
-        return;
-      }
-
-      // Default ACK when nothing to do
-      return sdk.sendWebhookResponse(data, callback);
+      );
     } catch (error) {
       enhancedLogger.error(
         "WEBHOOK_PROCESSING_ERROR",
         {
           error: error.message,
-          componentName: componentName,
+          componentName,
           conversationId:
             data.context?.session?.BotUserSession?.conversationSessionId,
         },
         correlationId
       );
-
       return triggerAgentTransfer(
         data,
         callback,
@@ -984,106 +814,23 @@ module.exports = {
 };
 
 // =============================
-// Integrations (Base  SBA)
+// Integrations (Base SBA)
 // =============================
 
 const integrations = {
-  // Base Quill integration: keep unchanged
-  package_tracking_handover: function (data, callback) {
-    const correlationId = enhancedLogger.generateCorrelationId();
-
-    try {
-      const orderNumber =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities
-          .orderNumber || data.context.session.BotUserSession.orderNumber;
-      const zipCode =
-        data.context.AI_Assisted_Dialogs.collectInfoTrack.entities.zipCode ||
-        data.context.session.BotUserSession.zipCode;
-
-      const requestData = {
-        text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
-        externalConversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        conversationId:
-          data.context.session.BotUserSession.conversationSessionId,
-        businessUnit: data.context.session.BotUserSession.businessUnit,
-      };
-
-      // ⏳ Wait for safeEasySystemCall to finish before responding
-      safeEasySystemCall(
-        "easysystem-send-api",
-        easysytemUrl,
-        requestData,
-        data,
-        callback,
-        correlationId,
-        (response, data, callback) => {
-          try {
-            console.log("Easysystem response:", JSON.stringify(response.data));
-            processEasySystemResponse(data, response.data);
-            if (response.data.transfer || data.agent_transfer === true) {
-              data.context.session.BotUserSession.transfer = true;
-              return sdk.sendBotMessage(data, callback);
-            }
-            if (response.data.endConversation) {
-              data.context.session.BotUserSession.endConversationFromEasySystem = true;
-            }
-            // ✅ Once EasySystem response is processed, send user message
-            return sdk.sendUserMessage(data, callback);
-          } catch (innerError) {
-            console.error("Error processing EasySystem response:", innerError);
-            return triggerAgentTransfer(
-              data,
-              callback,
-              "Please hold while I transfer you to an agent."
-            );
-          }
-        }
-      )
-        .then(() => {
-          // This runs *after* safeEasySystemCall has completed successfully
-          console.log(
-            "✅ safeEasySystemCall completed for package_tracking_handover"
-          );
-        })
-        .catch((err) => {
-          console.error("❌ safeEasySystemCall failed:", err?.message || err);
-          triggerAgentTransfer(
-            data,
-            callback,
-            "Please hold while I transfer you to an agent."
-          );
-        });
-    } catch (error) {
-      enhancedLogger.error(
-        "PACKAGE_TRACKING_ERROR",
-        {
-          error: error.message,
-          conversationId:
-            data.context?.session?.BotUserSession?.conversationSessionId,
-        },
-        correlationId
-      );
-      return triggerAgentTransfer(
-        data,
-        callback,
-        "Please hold while I transfer you to an agent."
-      );
-    }
-  },
-
   // === SBA: SCRIPT MODE integrations ===
-  // SBA variant that uses simple stash/ack and avoids safeEasySystemCall pattern
-  package_tracking_handover_sba: function (data, callback) {
-    const buHeader = buOf(data);
+  package_tracking_handover: function (data, callback) {
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
+    const text = `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`;
 
     const requestData = {
-      text: `can you help me track my order? My order number is ${orderNumber} and zip code is ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
+      text,
+      externalConversationId:
+        data.context.session.BotUserSession.conversationSessionId,
+      conversationId:
+        data.context.session.BotUserSession.conversationSessionId,
+      businessUnit: data.context.session.BotUserSession.businessUnit,
     };
 
     apiClient
@@ -1093,49 +840,45 @@ const integrations = {
         data,
       })
       .then((response) => {
-        const res = response.data || {};
+        data.context.session.BotUserSession.trackOrder = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
 
-        data.context.session.BotUserSession.render = res.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = res.text || "";
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
+        if (response.data.transfer) {
+          data.context.session.BotUserSession.transfer = response.data.transfer;
+          data.context.session.UserSession.owner = "kore";
           data.agent_transfer = true;
+          return sdk.sendBotMessage(data, callback);
+        } else if (response.data.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem =
+            response.data.endConversation;
+          data.context.session.UserSession.owner = "kore";
+        } else {
           data.context.session.UserSession.owner = "kore";
         }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
 
         return callback(null, data);
       })
-      .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("package_tracking_handover (SBA) error:", status, resp || error.message);
-
-        data.context.session.BotUserSession.render = "text/plain";
-        data.context.session.BotUserSession.renderr =
-          "Sorry, I couldn’t fetch your tracking details right now.";
-        data.context.session.UserSession.owner = "kore";
-        return callback(null, data);
-      });
+      .catch(() =>
+        triggerAgentTransfer(
+          data,
+          callback,
+          "Please hold while I transfer you to an agent."
+        )
+      );
   },
 
   Check_Return: function (data, callback) {
-    const buHeader = buOf(data);
     const orderNumber = data.context.orderNumber;
     const zipCode = data.context.zipCode;
+    const text = `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`;
 
     const requestData = {
-      text: `Check the status for Return an order with order number ${orderNumber} and ZipCode ${zipCode}`,
-      externalConversationId: data.context.session.BotUserSession.conversationSessionId,
-      conversationId: data.context.session.BotUserSession.conversationSessionId,
-      businessUnit: buHeader,
+      text,
+      externalConversationId:
+        data.context.session.BotUserSession.conversationSessionId,
+      conversationId:
+        data.context.session.BotUserSession.conversationSessionId,
+      businessUnit: data.context.session.BotUserSession.businessUnit,
     };
 
     apiClient
@@ -1145,38 +888,31 @@ const integrations = {
         data,
       })
       .then((response) => {
-        const res = response.data || {};
+        data.context.session.BotUserSession.returnStatus = response.data.text;
+        data.context.session.BotUserSession.content = response.data.contentType;
 
-        data.context.session.BotUserSession.render = res.contentType || "text/plain";
-        data.context.session.BotUserSession.renderr = res.text || "";
-
-        if (res.transfer) {
-          data.context.session.BotUserSession.transfer = true;
+        if (response.data.transfer) {
+          data.context.session.BotUserSession.transfer = response.data.transfer;
+          data.context.session.UserSession.owner = "kore";
           data.agent_transfer = true;
+          return sdk.sendBotMessage(data, callback);
+        } else if (response.data.endConversation) {
+          data.context.session.BotUserSession.endConversationFromEasySystem =
+            response.data.endConversation;
+          data.context.session.UserSession.owner = "kore";
+        } else {
           data.context.session.UserSession.owner = "kore";
         }
-        if (res.endConversation) {
-          data.context.session.BotUserSession.endConversationFromEasySystem = true;
-          data.context.session.UserSession.owner = "kore";
-        }
-
-        // Ensure next node runs (Script)
-        data.context.session.UserSession.owner = "kore";
 
         return callback(null, data);
       })
-      .catch((error) => {
-        const status = error?.response?.status;
-        const resp = error?.response?.data;
-        console.error("Return Status Error:", status, resp || error.message);
-
-        // Safe fallback so Script node still shows something
-        data.context.session.BotUserSession.render = "text/plain";
-        data.context.session.BotUserSession.renderr =
-          "Sorry, I couldn't fetch your return status.";
-        data.context.session.UserSession.owner = "kore";
-        return callback(null, data);
-      });
+      .catch(() =>
+        triggerAgentTransfer(
+          data,
+          callback,
+          "Please hold while I transfer you to an agent."
+        )
+      );
   },
 
   // === SBA: DIRECT-SEND integrations ===
@@ -1185,15 +921,23 @@ const integrations = {
     const zipCode = data.context.zipcodeForCancelItem;
     const text = `Cancel Item having Order Number ${orderNumber} and ZipCode ${zipCode}`;
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Cancel Item", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Cancel Item", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Cancel Item", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Cancel Item", data, err, callback)
+      );
   },
 
   add_new_user_handler: function (data, callback) {
     const text = "I want to add a new user to my Staples account.";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Add New User", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Add New User", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Add New User", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Add New User", data, err, callback)
+      );
   },
 
   Cancel_Entire_order: function (data, callback) {
@@ -1201,8 +945,12 @@ const integrations = {
     const zipCode = data.context.zipcodeForCancelOrder;
     const text = `Cancel the Entire Order having Order Number ${orderNumber} and ZipCode ${zipCode}`;
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Cancel Entire Order", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Cancel Entire Order", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Cancel Entire Order", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Cancel Entire Order", data, err, callback)
+      );
   },
 
   Refund_Check: function (data, callback) {
@@ -1215,37 +963,55 @@ const integrations = {
   Exchange_Item: function (data, callback) {
     const text = "I want to return or exchange an item.";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Exchange", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Exchange", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Exchange", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Exchange", data, err, callback)
+      );
   },
 
   change_shipping_address: function (data, callback) {
     const text =
       "I want to add a new shipping location to my Staples account (enter address, set delivery preferences, and update contact details).";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Shipping Address", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Shipping Address", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Shipping Address", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Shipping Address", data, err, callback)
+      );
   },
 
   manage_existing_users: function (data, callback) {
     const text =
       "I want to manage an existing user on my Staples account (edit details, change roles/permissions, or deactivate).";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Manage Existing User", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Manage Existing User", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Manage Existing User", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Manage Existing User", data, err, callback)
+      );
   },
 
   reset_password: function (data, callback) {
     const text = "Reset the password";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Reset Password", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Reset Password", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Reset Password", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Reset Password", data, err, callback)
+      );
   },
 
   reset_password_handler: function (data, callback) {
     const text = "Reset the password";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Reset Password Hook", data, res, callback))
+      .then((res) =>
+        handleEasySendOutcome_Direct("Reset Password Hook", data, res, callback)
+      )
       .catch((err) => handleEasySendError_Direct("Reset Hook", data, err, callback));
   },
 
@@ -1257,24 +1023,37 @@ const integrations = {
   },
 
   modify_shipping_location: function (data, callback) {
-    const text = "I want to modify an existing shipping location on my Staples account";
+    const text =
+      "I want to modify an existing shipping location on my Staples account";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Modify Shipping", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Modify Shipping", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Modify Shipping", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Modify Shipping", data, err, callback)
+      );
   },
 
   account_id_handler: function (data, callback) {
     const text = "I need help with my account or user ID.";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Account ID", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Account ID", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Account ID", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Account ID", data, err, callback)
+      );
   },
 
   missing_item: function (data, callback) {
-    const text = "I’m missing an item from my order.";
+    const text = "I'm missing an item from my order.";
     easySendText(data, text)
-      .then((res) => handleEasySendOutcome_Direct("Missing Item", data, res, callback))
-      .catch((err) => handleEasySendError_Direct("Missing Item", data, err, callback));
+      .then((res) =>
+        handleEasySendOutcome_Direct("Missing Item", data, res, callback)
+      )
+      .catch((err) =>
+        handleEasySendError_Direct("Missing Item", data, err, callback)
+      );
   },
 };
 
